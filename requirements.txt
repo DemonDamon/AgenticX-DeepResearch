@@ -1,36 +1,49 @@
-# AgenticDeepResearcher dependencies
+# ============================================================================
+# AgenticX-DeepResearch v2.0 依赖
+# ============================================================================
 
-agenticx
+# 核心框架（本地开发: pip install -e ../AgenticX）
+agenticx>=0.1.0
 
-pydantic
+# 数据模型
+pydantic>=2.0.0
 
-typer
+# LLM 相关
+openai>=1.0.0
+httpx>=0.25.0
 
-rich
-pyboxen
-boxing
-textual
+# 异步支持
+aiohttp>=3.9.0
 
-# Modern CLI interaction
-inquirerpy
+# 配置管理
+pyyaml>=6.0.0
+python-dotenv>=1.0.0
 
-# Google Search API dependencies
-google-genai
-python-dotenv
+# 搜索引擎
+requests>=2.31.0
+google-api-python-client>=2.100.0
+google-genai>=0.3.0
 
-# Monitoring and observability
-prometheus-client
-psutil
+# CLI 交互
+typer>=0.9.0
+rich>=13.0.0
+inquirerpy>=0.3.0
 
-# Testing related
-pytest
-pytest-cov
-pytest-asyncio
+# 报告生成
+markdown>=3.5.0
+jinja2>=3.1.0
 
-# Error handling and retry
-tenacity
-retrying
+# 工具类
+tenacity>=8.2.0
 
-# Logging and configuration
-pyyaml
-structlog
+# 日志
+structlog>=23.0.0
+
+# 监控
+prometheus-client>=0.19.0
+psutil>=5.9.0
+
+# 测试
+pytest>=7.0.0
+pytest-cov>=4.0.0
+pytest-asyncio>=0.21.0

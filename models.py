@@ -1,16 +1,26 @@
-"""基于AgenticX的深度搜索数据模型
+"""
+AgenticX-DeepResearch 核心数据模型
 
-本模块定义了深度搜索系统中使用的核心数据结构，
-严格遵循AgenticX框架的数据模型设计原则。
+本模块定义了深度搜索系统中使用的核心数据结构。
+全部采用 Pydantic BaseModel，与 AgenticX 框架数据模型设计对齐。
+搜索结果模型复用 tools.base_search.SearchResultItem。
 """
 
-from typing import List, Dict, Any, Optional, Union
-from dataclasses import dataclass, field
+from __future__ import annotations
+
 from datetime import datetime
 from enum import Enum
+from typing import Any, Dict, List, Optional
+from uuid import uuid4
+
+from pydantic import BaseModel, Field, ConfigDict
 
 
-class SearchEngine(Enum):
+# ============================================================================
+# 枚举类型
+# ============================================================================
+
+class SearchEngine(str, Enum):
     """支持的搜索引擎类型"""
     GOOGLE = "google"
     BING = "bing"
@@ -18,7 +28,7 @@ class SearchEngine(Enum):
     MOCK = "mock"
 
 
-class ResearchPhase(Enum):
+class ResearchPhase(str, Enum):
     """研究阶段枚举"""
     INITIALIZATION = "initialization"
     QUERY_GENERATION = "query_generation"
@@ -31,7 +41,7 @@ class ResearchPhase(Enum):
     COMPLETED = "completed"
 
 
-class QueryType(Enum):
+class QueryType(str, Enum):
     """查询类型枚举"""
     INITIAL = "initial"
     FOLLOWUP = "followup"
@@ -39,286 +49,225 @@ class QueryType(Enum):
     DEEP_DIVE = "deep_dive"
 
 
-@dataclass
-class SearchResult:
-    """搜索结果数据模型"""
-    title: str
-    url: str
-    snippet: str
-    source: SearchEngine
-    timestamp: datetime = field(default_factory=datetime.now)
-    relevance_score: Optional[float] = None
-    content: Optional[str] = None  # 完整网页内容（如果抓取）
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """转换为字典格式"""
-        return {
-            "title": self.title,
-            "url": self.url,
-            "snippet": self.snippet,
-            "source": self.source.value,
-            "timestamp": self.timestamp.isoformat(),
-            "relevance_score": self.relevance_score,
-            "content": self.content,
-            "metadata": self.metadata
-        }
+# ============================================================================
+# 核心数据模型
+# ============================================================================
 
-
-@dataclass
-class SearchQuery:
+class SearchQuery(BaseModel):
     """搜索查询数据模型"""
-    query: str
-    query_type: QueryType
-    language: str = "zh-CN"
-    max_results: int = 10
-    search_engines: List[SearchEngine] = field(default_factory=lambda: [SearchEngine.BOCHAAI])
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """转换为字典格式"""
-        return {
-            "query": self.query,
-            "query_type": self.query_type.value,
-            "language": self.language,
-            "max_results": self.max_results,
-            "search_engines": [engine.value for engine in self.search_engines],
-            "metadata": self.metadata
-        }
+    id: str = Field(default_factory=lambda: str(uuid4())[:8])
+    query: str = Field(description="搜索查询字符串")
+    query_type: QueryType = Field(default=QueryType.INITIAL, description="查询类型")
+    language: str = Field(default="zh-CN", description="搜索语言")
+    max_results: int = Field(default=10, description="最大结果数")
+    search_engines: List[SearchEngine] = Field(
+        default_factory=lambda: [SearchEngine.BOCHAAI],
+        description="使用的搜索引擎列表"
+    )
+    freshness: Optional[str] = Field(default=None, description="时效性过滤")
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
-@dataclass
-class KnowledgeItem:
+class KnowledgeItem(BaseModel):
     """知识项数据模型"""
-    content: str
-    type: str  # fact, concept, relationship, timeline, opinion等
-    confidence: float = 5.0  # 置信度 1-10
-    source: str = ""  # 来源URL或标识
-    timestamp: datetime = field(default_factory=datetime.now)
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """转换为字典格式"""
-        return {
-            "content": self.content,
-            "type": self.type,
-            "confidence": self.confidence,
-            "source": self.source,
-            "timestamp": self.timestamp.isoformat(),
-            "metadata": self.metadata
-        }
+    id: str = Field(default_factory=lambda: str(uuid4())[:8])
+    content: str = Field(description="知识内容")
+    type: str = Field(description="知识类型: fact, concept, relationship, timeline, opinion")
+    confidence: float = Field(default=5.0, ge=0.0, le=10.0, description="置信度 0-10")
+    source: str = Field(default="", description="来源 URL 或标识")
+    timestamp: str = Field(
+        default_factory=lambda: datetime.now().isoformat(),
+        description="创建时间"
+    )
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
-@dataclass
-class KnowledgeGap:
+class KnowledgeGap(BaseModel):
     """知识空白数据模型"""
-    topic: str
-    description: str
-    priority: int  # 1-10，10为最高优先级
-    suggested_queries: List[str] = field(default_factory=list)
-    identified_by: str = ""  # 识别此空白的智能体
-    timestamp: datetime = field(default_factory=datetime.now)
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """转换为字典格式"""
-        return {
-            "topic": self.topic,
-            "description": self.description,
-            "priority": self.priority,
-            "suggested_queries": self.suggested_queries,
-            "identified_by": self.identified_by,
-            "timestamp": self.timestamp.isoformat()
-        }
+    id: str = Field(default_factory=lambda: str(uuid4())[:8])
+    topic: str = Field(description="空白主题")
+    description: str = Field(description="空白描述")
+    priority: int = Field(default=5, ge=1, le=10, description="优先级 1-10")
+    suggested_queries: List[str] = Field(default_factory=list, description="建议的搜索查询")
+    identified_by: str = Field(default="", description="识别此空白的智能体")
+    timestamp: str = Field(
+        default_factory=lambda: datetime.now().isoformat(),
+        description="识别时间"
+    )
 
 
-@dataclass
-class ResearchIteration:
-    """研究迭代数据模型"""
-    iteration_id: int
-    queries: List[SearchQuery]
-    search_results: List[SearchResult]
-    analysis_summary: str
-    identified_gaps: List[KnowledgeGap]
-    phase: ResearchPhase
-    start_time: datetime = field(default_factory=datetime.now)
-    end_time: Optional[datetime] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """转换为字典格式"""
-        return {
-            "iteration_id": self.iteration_id,
-            "queries": [q.to_dict() for q in self.queries],
-            "search_results": [r.to_dict() for r in self.search_results],
-            "analysis_summary": self.analysis_summary,
-            "identified_gaps": [g.to_dict() for g in self.identified_gaps],
-            "phase": self.phase.value,
-            "start_time": self.start_time.isoformat(),
-            "end_time": self.end_time.isoformat() if self.end_time else None,
-            "metadata": self.metadata
-        }
-
-
-@dataclass
-class Citation:
+class Citation(BaseModel):
     """引用数据模型"""
-    source_url: str
-    title: str
-    author: Optional[str] = None
-    publication_date: Optional[datetime] = None
-    access_date: datetime = field(default_factory=datetime.now)
-    citation_format: str = "APA"  # APA, MLA, Chicago等
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """转换为字典格式"""
-        return {
-            "source_url": self.source_url,
-            "title": self.title,
-            "author": self.author,
-            "publication_date": self.publication_date.isoformat() if self.publication_date else None,
-            "access_date": self.access_date.isoformat(),
-            "citation_format": self.citation_format,
-            "metadata": self.metadata
-        }
-    
+    source_url: str = Field(description="来源 URL")
+    title: str = Field(description="标题")
+    author: Optional[str] = Field(default=None, description="作者")
+    publication_date: Optional[str] = Field(default=None, description="发布日期")
+    access_date: str = Field(
+        default_factory=lambda: datetime.now().isoformat(),
+        description="访问日期"
+    )
+    citation_format: str = Field(default="APA", description="引用格式")
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
     def format_citation(self) -> str:
         """格式化引用"""
         if self.citation_format == "APA":
             author_part = f"{self.author}. " if self.author else ""
-            date_part = f"({self.publication_date.year}). " if self.publication_date else ""
+            date_part = f"({self.publication_date}). " if self.publication_date else ""
             return f"{author_part}{date_part}{self.title}. Retrieved from {self.source_url}"
-        else:
-            # 默认简单格式
-            return f"{self.title}. {self.source_url}"
+        return f"{self.title}. {self.source_url}"
 
 
-@dataclass
-class ResearchContext:
-    """研究上下文数据模型"""
-    research_topic: str
-    research_objective: str
-    target_language: str = "zh-CN"
-    max_iterations: int = 5
-    current_iteration: int = 0
-    iterations: List[ResearchIteration] = field(default_factory=list)
-    overall_findings: str = ""
-    final_report: str = ""
-    citations: List[Citation] = field(default_factory=list)
-    start_time: datetime = field(default_factory=datetime.now)
-    end_time: Optional[datetime] = None
-    status: ResearchPhase = ResearchPhase.INITIALIZATION
-    metadata: Dict[str, Any] = field(default_factory=dict)
+# ============================================================================
+# 搜索结果模型（兼容层）
+# ============================================================================
+
+class SearchResult(BaseModel):
+    """搜索结果模型
     
+    为 report/interactive 等模块提供向后兼容的搜索结果类型。
+    与 tools.base_search.SearchResultItem 字段对齐，但保留独立定义
+    以避免循环导入。
+    """
+    title: str = Field(default="", description="结果标题")
+    url: str = Field(default="", description="结果链接")
+    snippet: str = Field(default="", description="结果摘要")
+    source: SearchEngine = Field(default=SearchEngine.MOCK, description="来源搜索引擎")
+    content: str = Field(default="", description="完整内容")
+    timestamp: str = Field(
+        default_factory=lambda: datetime.now().isoformat(),
+        description="获取时间"
+    )
+    relevance_score: Optional[float] = Field(default=None, description="相关性评分")
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+# ============================================================================
+# 研究过程模型
+# ============================================================================
+
+class ResearchIteration(BaseModel):
+    """研究迭代数据模型"""
+    iteration_id: int = Field(description="迭代编号")
+    queries: List[SearchQuery] = Field(default_factory=list, description="本轮查询列表")
+    search_results: List[SearchResult] = Field(
+        default_factory=list,
+        description="搜索结果列表"
+    )
+    analysis_summary: str = Field(default="", description="分析摘要")
+    identified_gaps: List[KnowledgeGap] = Field(default_factory=list, description="识别的知识空白")
+    knowledge_items: List[KnowledgeItem] = Field(default_factory=list, description="提取的知识项")
+    phase: ResearchPhase = Field(default=ResearchPhase.INITIALIZATION, description="当前阶段")
+    start_time: str = Field(
+        default_factory=lambda: datetime.now().isoformat(),
+        description="开始时间"
+    )
+    end_time: Optional[str] = Field(default=None, description="结束时间")
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ResearchContext(BaseModel):
+    """研究上下文数据模型（核心状态容器）"""
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    session_id: str = Field(default_factory=lambda: str(uuid4()), description="会话 ID")
+    research_topic: str = Field(description="研究主题")
+    research_objective: str = Field(default="", description="研究目标")
+    target_language: str = Field(default="zh-CN", description="目标语言")
+    max_iterations: int = Field(default=5, ge=1, le=20, description="最大迭代次数")
+    current_iteration: int = Field(default=0, description="当前迭代编号")
+    iterations: List[ResearchIteration] = Field(default_factory=list, description="迭代历史")
+    overall_findings: str = Field(default="", description="总体发现")
+    final_report: str = Field(default="", description="最终报告")
+    citations: List[Citation] = Field(default_factory=list, description="引用列表")
+    start_time: str = Field(
+        default_factory=lambda: datetime.now().isoformat(),
+        description="研究开始时间"
+    )
+    end_time: Optional[str] = Field(default=None, description="研究结束时间")
+    status: ResearchPhase = Field(default=ResearchPhase.INITIALIZATION, description="当前状态")
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
     def add_iteration(self, iteration: ResearchIteration) -> None:
         """添加研究迭代"""
         self.iterations.append(iteration)
         self.current_iteration = len(self.iterations)
-    
+
     def get_current_iteration(self) -> Optional[ResearchIteration]:
         """获取当前迭代"""
         return self.iterations[-1] if self.iterations else None
-    
+
     def get_all_search_results(self) -> List[SearchResult]:
         """获取所有搜索结果"""
-        all_results = []
+        all_results: List[SearchResult] = []
         for iteration in self.iterations:
             all_results.extend(iteration.search_results)
         return all_results
-    
+
     def get_all_knowledge_gaps(self) -> List[KnowledgeGap]:
         """获取所有知识空白"""
         all_gaps = []
         for iteration in self.iterations:
             all_gaps.extend(iteration.identified_gaps)
         return all_gaps
-    
+
     def should_continue(self) -> bool:
         """判断是否应该继续研究"""
         if self.current_iteration >= self.max_iterations:
             return False
-        
-        # 如果最近一轮没有发现新的知识空白，可以考虑结束
         current_iter = self.get_current_iteration()
         if current_iter and not current_iter.identified_gaps:
             return False
-        
         return True
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """转换为字典格式"""
-        return {
-            "research_topic": self.research_topic,
-            "research_objective": self.research_objective,
-            "target_language": self.target_language,
-            "max_iterations": self.max_iterations,
-            "current_iteration": self.current_iteration,
-            "iterations": [iter.to_dict() for iter in self.iterations],
-            "overall_findings": self.overall_findings,
-            "final_report": self.final_report,
-            "citations": [c.to_dict() for c in self.citations],
-            "start_time": self.start_time.isoformat(),
-            "end_time": self.end_time.isoformat() if self.end_time else None,
-            "status": self.status.value,
-            "metadata": self.metadata
-        }
 
 
-@dataclass
-class ReportSection:
+# ============================================================================
+# 报告模型
+# ============================================================================
+
+class ReportSection(BaseModel):
     """报告章节数据模型"""
-    title: str
-    content: str
-    level: int = 1  # 标题级别 1-6
-    citations: List[Citation] = field(default_factory=list)
-    subsections: List['ReportSection'] = field(default_factory=list)
-    
+    title: str = Field(description="章节标题")
+    content: str = Field(default="", description="章节内容")
+    level: int = Field(default=1, ge=1, le=6, description="标题级别")
+    citations: List[Citation] = Field(default_factory=list, description="章节引用")
+    subsections: List[ReportSection] = Field(default_factory=list, description="子章节")
+
     def to_markdown(self, base_level: int = 1) -> str:
-        """转换为Markdown格式"""
+        """转换为 Markdown 格式"""
         level = min(base_level + self.level - 1, 6)
         header = "#" * level + " " + self.title + "\n\n"
-        content = self.content + "\n\n"
-        
-        # 添加子章节
+        body = self.content + "\n\n" if self.content else ""
+
         for subsection in self.subsections:
-            content += subsection.to_markdown(base_level + 1)
-        
-        return header + content
+            body += subsection.to_markdown(base_level + 1)
+
+        return header + body
 
 
-@dataclass
-class ResearchReport:
+class ResearchReport(BaseModel):
     """研究报告数据模型"""
-    title: str
-    abstract: str
-    sections: List[ReportSection] = field(default_factory=list)
-    citations: List[Citation] = field(default_factory=list)
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    generated_at: datetime = field(default_factory=datetime.now)
-    
+    title: str = Field(description="报告标题")
+    abstract: str = Field(default="", description="摘要")
+    sections: List[ReportSection] = Field(default_factory=list, description="章节列表")
+    citations: List[Citation] = Field(default_factory=list, description="参考文献")
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    generated_at: str = Field(
+        default_factory=lambda: datetime.now().isoformat(),
+        description="生成时间"
+    )
+
     def to_markdown(self) -> str:
-        """转换为完整的Markdown报告"""
+        """转换为完整的 Markdown 报告"""
         report = f"# {self.title}\n\n"
         report += f"## 摘要\n\n{self.abstract}\n\n"
-        
+
         for section in self.sections:
             report += section.to_markdown(2)
-        
-        # 添加参考文献
+
         if self.citations:
             report += "## 参考文献\n\n"
             for i, citation in enumerate(self.citations, 1):
                 report += f"{i}. {citation.format_citation()}\n"
-        
+
         return report
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """转换为字典格式"""
-        return {
-            "title": self.title,
-            "abstract": self.abstract,
-            "sections": [section.__dict__ for section in self.sections],
-            "citations": [c.to_dict() for c in self.citations],
-            "metadata": self.metadata,
-            "generated_at": self.generated_at.isoformat()
-        }

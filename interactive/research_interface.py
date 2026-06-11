@@ -16,7 +16,7 @@ from agenticx.core.workflow import Workflow
 from agenticx.core.agent import Agent
 from agenticx.core.task import Task
 from models import ResearchContext, ResearchIteration, SearchResult, KnowledgeGap
-from workflows.deep_search_workflow import DeepSearchWorkflow
+from workflows.unified_research_workflow import UnifiedResearchWorkflow as DeepSearchWorkflow
 
 
 class InterfaceEvent(Enum):

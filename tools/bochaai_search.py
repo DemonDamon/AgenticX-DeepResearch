@@ -1,332 +1,259 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
-BochaaI Web Search Tool Implementation
-Web search tool implementation based on BochaaI Web Search API
+BochaaI Web Search Tool
+
+基于 BaseSearchTool 统一接口实现的博查AI搜索引擎工具。
+支持中文优化搜索、时效性过滤、AI摘要生成等高级功能。
 """
 
 import os
 import json
+import logging
 import urllib.parse
 import urllib.request
 import urllib.error
-from typing import List, Dict, Any, Optional, Union
+from typing import Any, Dict, List, Optional
+
 from pydantic import BaseModel, Field
-import sys
-import os
 
-# Add project root directory to Python path
-project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
+from .base_search import BaseSearchTool, SearchResultItem
 
-from agenticx.tools.base import BaseTool
+logger = logging.getLogger(__name__)
 
 
-class SearchInput(BaseModel):
-    """Search input model"""
-    query: str = Field(description="Search query string")
-    freshness: Optional[str] = Field(default="noLimit", description="Search time range")
-    summary: Optional[bool] = Field(default=False, description="Whether to display text summary")
-    include: Optional[str] = Field(default=None, description="Specify website scope for search")
-    exclude: Optional[str] = Field(default=None, description="Exclude website scope for search")
-    count: Optional[int] = Field(default=10, description="Number of returned results")
+# ============================================================================
+# BochaaI 搜索工具
+# ============================================================================
 
-
-class WebPageValue(BaseModel):
-    """Web page search result model"""
-    id: str = Field(description="Web page sort ID")
-    name: str = Field(description="Web page title")
-    url: str = Field(description="Web page URL")
-    displayUrl: str = Field(description="Web page display URL")
-    snippet: str = Field(description="Brief description of web page content")
-    summary: Optional[str] = Field(default=None, description="Text summary of web page content")
-    siteName: Optional[str] = Field(default=None, description="Web page site name")
-    siteIcon: Optional[str] = Field(default=None, description="Web page site icon")
-    datePublished: Optional[str] = Field(default=None, description="Web page publication date")
-    dateLastCrawled: Optional[str] = Field(default=None, description="Web page crawl date")
-    cachedPageUrl: Optional[str] = Field(default=None, description="Web page cached page URL")
-    language: Optional[str] = Field(default=None, description="Web page language")
-    isFamilyFriendly: Optional[bool] = Field(default=None, description="Whether it's a family-friendly page")
-    isNavigational: Optional[bool] = Field(default=None, description="Whether it's a navigational page")
-
-
-class WebSearchWebPages(BaseModel):
-    """Web search result collection model"""
-    webSearchUrl: Optional[str] = Field(default=None, description="Search URL")
-    totalEstimatedMatches: Optional[int] = Field(default=None, description="Total number of web pages matching the search")
-    value: List[WebPageValue] = Field(description="Search result list")
-    someResultsRemoved: Optional[bool] = Field(default=None, description="Whether results have been filtered for safety")
-
-
-class WebSearchQueryContext(BaseModel):
-    """Search query context model"""
-    originalQuery: str = Field(description="Original search keywords")
-
-
-class SearchResponse(BaseModel):
-    """Search response model"""
-    search_type: str = Field(description="Search type")
-    queryContext: WebSearchQueryContext = Field(description="Query context")
-    webPages: Optional[WebSearchWebPages] = Field(default=None, description="Web page search results")
-    images: Optional[Dict[str, Any]] = Field(default=None, description="Image search results")
-    videos: Optional[Dict[str, Any]] = Field(default=None, description="Video search results")
-
-
-class BochaaIWebSearchTool(BaseTool):
-    """BochaaI Web Search tool, encapsulates calls to BochaaI Web Search API"""
+class BochaaIWebSearchTool(BaseSearchTool):
+    """
+    博查AI (BochaaI) 搜索工具
     
-    def __init__(self, api_key: Optional[str] = None, endpoint: Optional[str] = None):
-        """
-        Initialize BochaaI Web Search tool
-        
-        Args:
-            api_key: BochaaI API Key (if not provided, get from environment variables)
-            endpoint: API endpoint (defaults to official endpoint)
-        """
+    特性：
+    - 中文搜索优化
+    - 支持时效性过滤 (freshness)
+    - 支持 AI 摘要生成
+    - 支持域名包含/排除过滤
+    """
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        endpoint: Optional[str] = None,
+        enable_summary: bool = False,
+        include: Optional[str] = None,
+        exclude: Optional[str] = None,
+        **kwargs
+    ):
         super().__init__(
-            name="bochaai_web_search_tool",
-            description="Use BochaaI Web Search API to search for web page information. Input search query, returns relevant web page results with titles, links and summaries.",
-            args_schema=SearchInput
+            name="bochaai_web_search",
+            description="使用博查AI搜索引擎进行网络搜索，支持中文优化和AI摘要。输入搜索查询，返回相关网页结果。",
+            engine_name="bochaai",
+            timeout=30.0,
+            **kwargs
         )
-        
-        # Priority: passed parameters, then environment variables
-        self.api_key = api_key or os.getenv("BOCHAAI_API_KEY")
-        if not self.api_key:
-            raise ValueError(
-                "BochaaI API Key not configured\n"
-                "Please set api_key parameter in config file, or set in environment variables:\n"
-                "  BOCHAAI_API_KEY=your_bochaai_api_key"
-            )
-        
+        self.api_key = api_key or os.getenv("BOCHAAI_API_KEY", "")
         self.endpoint = endpoint or "https://api.bochaai.com/v1/web-search"
-        
-        # BochaaI Web Search configuration completed
-    
-    def _run(self, **kwargs) -> List[Dict[str, Any]]:
-        """
-        Execute BochaaI Web Search
-        
-        Args:
-            **kwargs: Keyword arguments containing:
-                query: Search query string
-                freshness: Search time range (default: "noLimit")
-                summary: Whether to display text summary (default: False)
-                include: Specify website scope for search (optional)
-                exclude: Exclude website scope for search (optional)
-                count: Number of returned results (default: 10)
-            
-        Returns:
-            List[Dict[str, Any]]: Search results list, each result includes title, link, summary, etc.
-        """
-        # Extract parameters from kwargs
-        query = kwargs.get('query', '')
-        freshness = kwargs.get('freshness', 'noLimit')
-        summary = kwargs.get('summary', False)
-        include = kwargs.get('include', None)
-        exclude = kwargs.get('exclude', None)
-        count = kwargs.get('count', 10)
-        
+        self.enable_summary = enable_summary
+        self.include = include
+        self.exclude = exclude
+
+        if not self.api_key:
+            logger.warning("[BochaaI] 未配置 API Key (BOCHAAI_API_KEY)")
+
+    def _execute_search(
+        self,
+        query: str,
+        max_results: int = 10,
+        language: str = "zh-CN",
+        freshness: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """执行 BochaaI 搜索请求"""
+        if not self.api_key:
+            logger.error("[BochaaI] API Key 未配置，无法执行搜索")
+            return []
+
+        # 构建请求数据
+        request_data: Dict[str, Any] = {
+            "query": query,
+            "count": min(max(max_results, 1), 50),
+            "freshness": freshness or "noLimit",
+            "summary": self.enable_summary,
+        }
+
+        if self.include:
+            request_data["include"] = self.include
+        if self.exclude:
+            request_data["exclude"] = self.exclude
+
         try:
-            # Build request data
-            request_data = {
-                "query": query,
-                "freshness": freshness,
-                "summary": summary,
-                "count": min(max(count, 1), 50)  # Limit between 1-50
-            }
-            
-            # Add optional parameters
-            if include:
-                request_data["include"] = include
-            if exclude:
-                request_data["exclude"] = exclude
-            
-            # Create request
             req = urllib.request.Request(
                 self.endpoint,
-                data=json.dumps(request_data).encode('utf-8'),
+                data=json.dumps(request_data).encode("utf-8"),
                 headers={
-                    'Authorization': f'Bearer {self.api_key}',
-                    'Content-Type': 'application/json',
-                    'User-Agent': 'AgenticX-BochaaI-Search/1.0'
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                    "User-Agent": "AgenticX-DeepResearch/2.0"
                 }
             )
-            
-            # Send request
-            with urllib.request.urlopen(req, timeout=30) as response:
-                data = response.read().decode('utf-8')
-                result = json.loads(data)
-            
-            # Check response status
-            
-            # Parse search results
-            results = []
-            
-            # Check response structure, BochaaI's response format is {"code": 200, "data": {...}}
-            if 'data' in result:
-                data = result['data']
-                if 'webPages' in data and data['webPages'] and 'value' in data['webPages']:
-                    for item in data['webPages']['value']:
-                        result_item = {
-                            'id': item.get('id', ''),
-                            'title': item.get('name', 'No Title'),
-                            'url': item.get('url', ''),
-                            'displayUrl': item.get('displayUrl', ''),
-                            'snippet': item.get('snippet', 'No Summary'),
-                            'siteName': item.get('siteName', ''),
-                            'datePublished': item.get('datePublished', ''),
-                            'language': item.get('language', ''),
-                            'isFamilyFriendly': item.get('isFamilyFriendly', True),
-                            'images': []  # Initialize image field
-                        }
-                        
-                        # Add summary (if requested)
-                        if summary and 'summary' in item:
-                            result_item['summary'] = item['summary']
-                        
-                        results.append(result_item)
-                
-                # Handle image search results
-                if 'images' in data and data['images'] and 'value' in data['images']:
-                    for img_item in data['images']['value'][:5]:  # Limit image count
-                        image_info = {
-                            'type': 'image',
-                            'title': img_item.get('name', 'Image'),
-                            'url': img_item.get('contentUrl', ''),
-                            'thumbnail': img_item.get('thumbnailUrl', ''),
-                            'source': img_item.get('hostPageUrl', ''),
-                            'width': img_item.get('width', 0),
-                            'height': img_item.get('height', 0)
-                        }
-                        results.append(image_info)
 
-                # If no webPages data found, handle silently
-                pass
-            # If no 'data' field found, handle silently
-            
-            # Print title of each web page in search results
-            # print(f"    ✦ search query: \033[36m{query}\033[0m")
-            if results:
-                for i, result in enumerate(results, 1):
-                    if result.get('type') != 'image':  # Only print web page results, not image results
-                        title = result.get('title', 'No Title')
-                        print(f"  | \033[2m{title}\033[0m")
+            with urllib.request.urlopen(req, timeout=30) as response:
+                raw_data = response.read().decode("utf-8")
+                result = json.loads(raw_data)
+
+            # 解析 BochaaI 响应结构: {"code": 200, "data": {"webPages": {"value": [...]}}}
+            results = []
+            data = result.get("data", {})
+
+            if "webPages" in data and data["webPages"]:
+                for item in data["webPages"].get("value", []):
+                    results.append({
+                        "title": item.get("name", ""),
+                        "url": item.get("url", ""),
+                        "snippet": item.get("snippet", ""),
+                        "summary": item.get("summary"),
+                        "site_name": item.get("siteName"),
+                        "date_published": item.get("datePublished"),
+                        "date_crawled": item.get("dateLastCrawled"),
+                        "language": item.get("language"),
+                    })
+
+            logger.info(f"[BochaaI] 搜索 '{query}' 返回 {len(results)} 条结果")
+            return results
+
+        except urllib.error.HTTPError as e:
+            error_msg = f"BochaaI API HTTP 错误: {e.code} - {e.reason}"
+            if e.code == 401:
+                error_msg += " (请检查 BOCHAAI_API_KEY)"
+            elif e.code == 429:
+                error_msg += " (请求过于频繁)"
+            logger.error(error_msg)
+            return []
+
+        except urllib.error.URLError as e:
+            logger.error(f"[BochaaI] 网络连接错误: {e.reason}")
+            return []
+
+        except json.JSONDecodeError as e:
+            logger.error(f"[BochaaI] JSON 解析错误: {e}")
+            return []
+
+        except Exception as e:
+            logger.error(f"[BochaaI] 搜索异常: {e}")
+            return []
+
+    async def _aexecute_search(
+        self,
+        query: str,
+        max_results: int = 10,
+        language: str = "zh-CN",
+        freshness: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """异步执行 BochaaI 搜索请求"""
+        try:
+            import aiohttp
+        except ImportError:
+            # 回退到同步实现
+            import asyncio
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(
+                None,
+                lambda: self._execute_search(query, max_results, language, freshness)
+            )
+
+        if not self.api_key:
+            return []
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        payload: Dict[str, Any] = {
+            "query": query,
+            "count": min(max(max_results, 1), 50),
+            "freshness": freshness or "noLimit",
+            "summary": self.enable_summary,
+        }
+
+        if self.include:
+            payload["include"] = self.include
+        if self.exclude:
+            payload["exclude"] = self.exclude
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    self.endpoint,
+                    headers=headers,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=30.0)
+                ) as response:
+                    response.raise_for_status()
+                    data = await response.json()
+
+            results = []
+            api_data = data.get("data", {})
+            if "webPages" in api_data and api_data["webPages"]:
+                for item in api_data["webPages"].get("value", []):
+                    results.append({
+                        "title": item.get("name", ""),
+                        "url": item.get("url", ""),
+                        "snippet": item.get("snippet", ""),
+                        "summary": item.get("summary"),
+                        "site_name": item.get("siteName"),
+                        "date_published": item.get("datePublished"),
+                        "date_crawled": item.get("dateLastCrawled"),
+                    })
 
             return results
-            
-        except urllib.error.HTTPError as e:
-            error_msg = f"BochaAI API HTTP error: {e.code} - {e.reason}"
-            if e.code == 401:
-                error_msg += "\nPlease check if BOCHAAI_API_KEY is correctly set"
-            elif e.code == 429:
-                error_msg += "\nRequests too frequent, please try again later"
-            elif e.code == 403:
-                error_msg += "\nAccess denied, please check API key permissions"
-            print(f"  | \033[2m{error_msg}\033[0m")
-            return []
-            
-        except urllib.error.URLError as e:
-            print(f"  | \033[2mNetwork connection error: {e.reason}\033[0m")
-            return []
-            
-        except json.JSONDecodeError as e:
-            print(f"  | \033[2mJSON parsing error: {e}\033[0m")
-            return []
-            
+
         except Exception as e:
-            print(f"  | \033[2mBochaAI search failed: {e}\033[0m")
+            logger.error(f"[BochaaI] 异步搜索异常: {e}")
             return []
-    
-    async def _arun(self, **kwargs) -> List[Dict[str, Any]]:
-        """Asynchronously execute search (currently calls synchronous method)"""
-        return self._run(**kwargs)
 
 
-class MockBochaaISearchTool(BaseTool):
-    """Mock BochaaI Search tool for testing"""
-    
-    def __init__(self):
+# ============================================================================
+# Mock 工具（测试用）
+# ============================================================================
+
+class MockBochaaISearchTool(BaseSearchTool):
+    """BochaaI 模拟搜索工具（用于测试和开发）"""
+
+    def __init__(self, **kwargs):
         super().__init__(
-            name="bochaai_web_search_tool",
-            description="Mock using BochaaI Web Search API to search for web page information. Input search query, returns relevant web page results with titles, links and summaries.",
-            args_schema=SearchInput
+            name="mock_bochaai_web_search",
+            description="模拟博查AI搜索工具（测试用）",
+            engine_name="bochaai_mock",
+            timeout=5.0,
+            **kwargs
         )
-        
-        # Mock BochaaI Search configuration completed
-    
-    def _run(self, **kwargs) -> List[Dict[str, Any]]:
-        """
-        Mock BochaaI search execution
-        
-        Args:
-            **kwargs: Keyword arguments containing:
-                query: Search query string
-                freshness: Search time range (default: "noLimit")
-                summary: Whether to display text summary (default: False)
-                include: Specify website scope for search (optional)
-                exclude: Exclude website scope for search (optional)
-                count: Number of returned results (default: 10)
-            
-        Returns:
-            List[Dict[str, Any]]: Mock search results list
-        """
-        # Extract parameters from kwargs
-        query = kwargs.get('query', '')
-        freshness = kwargs.get('freshness', 'noLimit')
-        summary = kwargs.get('summary', False)
-        include = kwargs.get('include', None)
-        exclude = kwargs.get('exclude', None)
-        count = kwargs.get('count', 10)
-        
-        # Return mock search results
+
+    def _execute_search(
+        self,
+        query: str,
+        max_results: int = 10,
+        language: str = "zh-CN",
+        freshness: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """返回模拟搜索结果"""
         mock_results = []
-        
-        for i in range(min(count, 5)):  # Return up to 5 mock results
-            result = {
-                "id": f"mock_result_{i+1}",
-                "title": f"{['In-depth Analysis', 'Latest Updates', 'Professional Insights', 'Industry Report', 'Technical Guide'][i]} on '{query}'",
-                "url": f"https://example.com/{query.replace(' ', '-')}-{i+1}",
-                "displayUrl": f"example.com/{query.replace(' ', '-')}-{i+1}",
-                "snippet": f"This is a detailed introduction about {query}, containing the latest research findings and development trends. The content covers multiple important aspects",
-                "siteName": f"Professional {['News', 'Updates', 'Tech', 'Research', 'Analysis'][i]} Site",
-                "datePublished": "2024-12-20T10:30:00+08:00",
-                "language": "en-US",
-                "isFamilyFriendly": True
-            }
-            
-            # If summary is requested, add summary field
-            if summary:
-                result["summary"] = f"Detailed summary about {query}: This is a comprehensive analysis report that deeply explores various aspects of the related topic, providing valuable insights and recommendations."
-            
-            mock_results.append(result)
-        
-        print(f"    ⎿ ✅ Mock BochaAI search completed: query='{query}', result count={len(mock_results)}")
+        templates = [
+            ("深度分析", "research"),
+            ("最新进展", "news"),
+            ("技术解析", "tech"),
+            ("行业报告", "report"),
+            ("专家观点", "expert"),
+        ]
+
+        for i, (label, category) in enumerate(templates[:max_results]):
+            mock_results.append({
+                "title": f"[Mock] {query} - {label}",
+                "url": f"https://example.com/{category}/{query.replace(' ', '-')}-{i+1}",
+                "snippet": f"这是关于 '{query}' 的模拟搜索结果（{label}）。包含详细的分析和数据支持。",
+                "summary": f"AI摘要: {query} 是一个重要的研究方向，本文从{label}角度进行了深入探讨。",
+                "site_name": f"Mock {label} Site",
+                "date_published": "2025-01-01T00:00:00Z",
+            })
+
+        logger.info(f"[MockBochaaI] 模拟搜索 '{query}' 返回 {len(mock_results)} 条结果")
         return mock_results
-    
-    async def _arun(self, **kwargs) -> List[Dict[str, Any]]:
-        """Asynchronously execute mock search"""
-        return self._run(**kwargs)
-
-
-# For compatibility, provide simplified search result model
-class SearchResult(BaseModel):
-    """Simplified search result model"""
-    title: str = Field(description="Search result title")
-    url: str = Field(description="Search result link")
-    link: str = Field(description="Search result link (alias)")
-    snippet: str = Field(description="Search result summary")
-
-
-def convert_to_simple_results(results: List[Dict[str, Any]]) -> List[SearchResult]:
-    """Convert BochaaI search results to simplified search result model"""
-    simple_results = []
-    for result in results:
-        simple_result = SearchResult(
-            title=result.get('title', ''),
-            url=result.get('url', ''),
-            link=result.get('url', ''),
-            snippet=result.get('snippet', '')
-        )
-        simple_results.append(simple_result)
-    return simple_results

@@ -1,611 +1,394 @@
-"""AgenticX-based Report Writing Agent
+"""
+Report Writer Agent
 
-This module implements ReportWriterAgent, responsible for writing structured research reports,
-managing citations and formatting, strictly following the AgenticX framework's Agent abstraction.
+基于 AgenticX 框架的报告撰写智能体。
+负责将研究发现整合为结构化的研究报告。
 """
 
-from typing import List, Dict, Any, Optional
 import json
 import logging
-from datetime import datetime
-from agenticx.core.agent import Agent
-from agenticx.core.message import Message
-from agenticx.core.prompt import PromptTemplate
+import re
+from typing import Any, Dict, List, Optional
+
+from agenticx.core.agent import Agent, AgentContext, AgentResult
+from agenticx.llms.base import BaseLLMProvider
+
 from models import (
-    ResearchContext, 
+    ResearchContext,
     ResearchReport,
     ReportSection,
     Citation,
-    SearchResult
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ReportWriterAgent(Agent):
-    """Report Writing Agent
+    """报告撰写智能体
     
-    Based on agenticx.core.Agent implementation, responsible for:
-    1. Writing structured research reports
-    2. Managing citations and references
-    3. Formatting report content
-    4. Ensuring report quality and completeness
+    基于 agenticx.core.Agent 实现，负责：
+    1. 生成报告大纲
+    2. 撰写报告摘要
+    3. 撰写各章节内容
+    4. 整合引用和参考文献
+    5. 生成完整研究报告
     """
-    
-    def __init__(self, name: str = "Research Report Writing Expert", role: str = "Research Report Writer", 
-                 goal: str = "Write high-quality structured research reports, ensuring accurate content, clear logic, and standardized citations",
-                 organization_id: str = "deepsearch", **kwargs):
+
+    def __init__(
+        self,
+        name: str = "报告撰写专家",
+        role: str = "研究报告撰写师",
+        goal: str = "将研究发现整合为高质量、结构化的研究报告",
+        organization_id: str = "deepsearch",
+        llm_provider: Optional[Any] = None,
+        **kwargs
+    ):
         super().__init__(
             name=name,
             role=role,
             goal=goal,
             organization_id=organization_id,
             backstory=(
-                "You are an experienced research report writing expert, skilled at organizing complex research information "
-                "into well-structured, logically rigorous academic reports. You are proficient in various citation formats "
-                "and can ensure the academic standards and readability of reports."
+                "你是一位经验丰富的研究报告撰写专家，擅长将复杂的研究发现"
+                "整合为清晰、结构化、有引用支撑的专业研究报告。"
             ),
             **kwargs
         )
-    
-    def generate_report_outline(self, context: ResearchContext) -> Dict[str, Any]:
-        """Generate report outline"""
-        all_results = context.get_all_search_results()
-        findings_summary = self._summarize_findings(context)
+
+        object.__setattr__(self, "llm", llm_provider)
+
+    # ========================================================================
+    # 公共接口
+    # ========================================================================
+
+    async def generate_report(
+        self,
+        research_context: ResearchContext,
+    ) -> ResearchReport:
+        """生成完整研究报告（主入口）
         
-        # Detect language and generate appropriate prompt
-        detected_language = self._detect_language(context.research_topic)
-        
-        if detected_language == "zh":
-            prompt = PromptTemplate(
-                template="""
-您是一位专业的研究报告写作专家。请为以下研究主题设计详细的研究报告大纲。
-
-研究主题: {research_topic}
-研究目标: {research_objective}
-研究迭代次数: {iterations_count}
-收集信息数量: {results_count}
-
-研究发现摘要:
-{findings_summary}
-
-请设计结构化的报告大纲，包括：
-
-1. **报告标题**: 准确反映研究内容的标题
-2. **摘要结构**: 摘要应包含的关键要素
-3. **主要章节**: 详细的章节结构，每个章节包括：
-   - 章节标题
-   - 章节目标
-   - 主要内容要点
-   - 预期长度
-
-报告应遵循学术写作标准，逻辑清晰，层次分明。
-
-请以JSON格式输出大纲：
-```json
-{{
-  "title": "报告标题",
-  "abstract_elements": ["摘要要素1", "摘要要素2"],
-  "sections": [
-    {{
-      "title": "章节标题",
-      "level": 1,
-      "objective": "章节目标",
-      "content_points": ["要点1", "要点2"],
-      "estimated_length": "预期字数",
-      "subsections": [
-        {{
-          "title": "子章节标题",
-          "level": 2,
-          "content_points": ["子要点1"]
-        }}
-      ]
-    }}
-  ]
-}}
-```
-                """
-            )
-        else:
-            prompt = PromptTemplate(
-                template="""
-You are a professional research report writing expert. Please design a detailed report outline for the following research topic.
-
-Research Topic: {research_topic}
-Research Objective: {research_objective}
-Research Iterations: {iterations_count}
-Collected Information Count: {results_count}
-
-Research findings summary:
-{findings_summary}
-
-Please design a structured report outline, including:
-
-1. **Report Title**: A title that accurately reflects the research content
-2. **Abstract Structure**: Key elements that the abstract should contain
-3. **Main Sections**: Detailed section structure, each section including:
-   - Section title
-   - Section objective
-   - Main content points
-   - Expected length
-
-The report should follow academic writing standards, with clear logic and distinct levels.
-
-Please output the outline in JSON format:
-```json
-{
-  "title": "Report Title",
-  "abstract_elements": ["Abstract Element 1", "Abstract Element 2"],
-  "sections": [
-    {
-      "title": "Section Title",
-      "level": 1,
-      "objective": "Section Objective",
-      "content_points": ["Point 1", "Point 2"],
-      "estimated_length": "Expected Word Count",
-      "subsections": [
-        {
-          "title": "Subsection Title",
-          "level": 2,
-          "content_points": ["Sub-point 1"]
-        }
-      ]
-    }
-  ]
-}
-```
-                """
-            )
-        
-        message = Message(
-            content=prompt.format(
-                research_topic=context.research_topic,
-                research_objective=context.research_objective,
-                iterations_count=len(context.iterations),
-                results_count=len(all_results),
-                findings_summary=findings_summary
-            ),
-            sender_id=self.id,
-            recipient_id="llm_provider"
-        )
-        
-        if self.llm is None:
-            raise ValueError("LLM provider not initialized. Please set self.llm before using generate methods.")
-        response = self.llm.generate(message.content)
-        
-        try:
-            outline = self._extract_json_from_response(response)
-            return outline
-        except Exception as e:
-            logging.error(f"Failed to parse report outline: {e}")
-            return self._create_default_outline(context)
-    
-    def write_abstract(self, context: ResearchContext, outline: Dict[str, Any]) -> str:
-        """Write report abstract"""
-        key_findings = self._extract_key_findings(context)
-        
-        # Detect language and generate appropriate prompt
-        detected_language = self._detect_language(context.research_topic)
-        
-        if detected_language == "zh":
-            prompt = PromptTemplate(
-                template="""
-您是一位专业的学术写作专家。请为以下研究撰写简洁而全面的摘要。
-
-研究主题: {research_topic}
-研究目标: {research_objective}
-
-摘要应包含的要素:
-{abstract_elements}
-
-关键研究发现:
-{key_findings}
-
-请撰写200-300字的摘要，包括：
-1. 研究背景和目标
-2. 研究方法概述
-3. 主要发现
-4. 结论和意义
-
-摘要应准确、简洁、自包含，让读者能够快速理解研究的核心内容。
-                """
-            )
-        else:
-            prompt = PromptTemplate(
-                template="""
-You are a professional academic writing expert. Please write a concise and comprehensive abstract for the following research.
-
-Research Topic: {research_topic}
-Research Objective: {research_objective}
-
-Elements that the abstract should contain:
-{abstract_elements}
-
-Key research findings:
-{key_findings}
-
-Please write a 200-300 word abstract, including:
-1. Research background and objectives
-2. Research methodology overview
-3. Main findings
-4. Conclusions and significance
-
-The abstract should be accurate, concise, and self-contained, allowing readers to quickly understand the core content of the research.
-                """
-            )
-        
-        message = Message(
-            content=prompt.format(
-                research_topic=context.research_topic,
-                research_objective=context.research_objective,
-                abstract_elements="\n".join(outline.get("abstract_elements", [])),
-                key_findings=key_findings
-            ),
-            sender_id=self.id,
-            recipient_id="llm_provider"
-        )
-        
-        if self.llm is None:
-            raise ValueError("LLM provider not initialized. Please set self.llm before using generate methods.")
-        response = self.llm.generate(message.content)
-        return response.strip()
-    
-    def write_section(self, context: ResearchContext, section_spec: Dict[str, Any], 
-                     relevant_results: List[SearchResult]) -> ReportSection:
-        """Write report section"""
-        citations = self._create_citations_for_results(relevant_results)
-        
-        # Detect language and generate appropriate prompt
-        detected_language = self._detect_language(context.research_topic)
-        
-        if detected_language == "zh":
-            prompt = PromptTemplate(
-                template="""
-您是一位专业的学术写作专家。请撰写报告的章节内容。
-
-章节标题: {section_title}
-章节目标: {section_objective}
-章节要点: {content_points}
-预期长度: {estimated_length}
-
-相关信息源:
-{relevant_sources}
-
-请按照以下要求撰写此章节的内容：
-
-1. **结构清晰**: 使用适当的子标题组织内容
-2. **内容丰富**: 基于提供的信息源，进行深入分析和讨论
-3. **逻辑严谨**: 确保清晰的论证逻辑，连贯流畅
-4. **标准引用**: 在适当位置标记引用（使用[数字]格式）
-5. **专业语言**: 使用学术语言表达
-
-章节内容应完整独立，能够充分阐述本章节的主题。
-                """
-            )
-        else:
-            prompt = PromptTemplate(
-                template="""
-You are a professional academic writing expert. Please write a section of the report.
-
-Section Title: {section_title}
-Section Objective: {section_objective}
-Section Key Points: {content_points}
-Expected Length: {estimated_length}
-
-Relevant information sources:
-{relevant_sources}
-
-Please write the content of this section with the following requirements:
-
-1. **Clear Structure**: Use appropriate subheadings to organize content
-2. **Rich Content**: Based on the provided information sources, conduct in-depth analysis and discussion
-3. **Rigorous Logic**: Ensure clear argumentation logic with coherent flow
-4. **Standardized Citations**: Mark citations at appropriate positions (using [number] format)
-5. **Professional Language**: Use academic language expression
-
-The section content should be complete and independent, able to fully elaborate on the theme of this section.
-                """
-            )
-        
-        message = Message(
-            content=prompt.format(
-                section_title=section_spec.get("title", ""),
-                section_objective=section_spec.get("objective", ""),
-                content_points="\n".join(section_spec.get("content_points", [])),
-                estimated_length=section_spec.get("estimated_length", "适中"),
-                relevant_sources=self._format_sources_for_writing(relevant_results)
-            ),
-            sender_id=self.id,
-            recipient_id="llm_provider"
-        )
-        
-        if self.llm is None:
-            raise ValueError("LLM provider not initialized. Please set self.llm before using generate methods.")
-        response = self.llm.generate(message.content)
-        
-        # Create section object
-        section = ReportSection(
-            title=section_spec.get("title", ""),
-            content=response.strip(),
-            level=section_spec.get("level", 1),
-            citations=citations
-        )
-        
-        # Process subsections
-        for subsection_spec in section_spec.get("subsections", []):
-            subsection = self.write_section(context, subsection_spec, relevant_results)
-            section.subsections.append(subsection)
-        
-        return section
-    
-    def generate_complete_report(self, context: ResearchContext) -> ResearchReport:
-        """Generate complete report"""
-        # 1. Generate outline
-        outline = self.generate_report_outline(context)
-        
-        # 2. Write abstract
-        abstract = self.write_abstract(context, outline)
-        
-        # 3. Write each section
-        sections = []
-        all_results = context.get_all_search_results()
-        
-        for section_spec in outline.get("sections", []):
-            # Filter relevant search results for each section
-            relevant_results = self._filter_relevant_results(
-                all_results, section_spec.get("title", "")
-            )
+        Args:
+            research_context: 研究上下文（包含所有迭代结果）
             
-            section = self.write_section(context, section_spec, relevant_results)
+        Returns:
+            ResearchReport 实例
+        """
+        # 1. 生成大纲
+        outline = await self.generate_report_outline(research_context)
+
+        # 2. 撰写摘要
+        abstract = await self.write_abstract(research_context, outline)
+
+        # 3. 撰写各章节
+        sections = []
+        for section_info in outline.get("sections", []):
+            section = await self.write_section(research_context, section_info)
             sections.append(section)
-        
-        # 4. Collect all citations
-        all_citations = self._collect_all_citations(sections, all_results)
-        
-        # 5. Create complete report
+
+        # 4. 收集引用
+        citations = self._collect_citations(research_context)
+
+        # 5. 组装报告
         report = ResearchReport(
-            title=outline.get("title", f"{context.research_topic} - Research Report"),
+            title=outline.get("title", research_context.research_topic),
             abstract=abstract,
             sections=sections,
-            citations=all_citations,
+            citations=citations,
             metadata={
-                "research_topic": context.research_topic,
-                "research_objective": context.research_objective,
-                "iterations_count": len(context.iterations),
-                "sources_count": len(all_results),
-                "generated_by": self.name
-            }
+                "topic": research_context.research_topic,
+                "iterations": research_context.current_iteration,
+                "total_results": len(research_context.get_all_search_results()),
+            },
         )
-        
+
         return report
-    
-    def _summarize_findings(self, context: ResearchContext) -> str:
-        """Summarize research findings"""
+
+    async def generate_report_outline(
+        self,
+        research_context: ResearchContext,
+    ) -> Dict[str, Any]:
+        """生成报告大纲"""
+        language = self._detect_language(research_context.research_topic)
+        findings = self._extract_key_findings(research_context)
+
+        if language == "zh":
+            prompt = f"""你是研究报告结构专家。请为以下研究生成报告大纲。
+
+研究主题: {research_context.research_topic}
+研究目标: {research_context.research_objective}
+迭代轮次: {research_context.current_iteration}
+关键发现摘要: {findings[:2000]}
+
+请生成报告大纲，以JSON返回：
+{{
+    "title": "报告标题",
+    "sections": [
+        {{"title": "章节标题", "level": 1, "focus": "章节重点", "subsections": ["子节1", "子节2"]}}
+    ]
+}}
+"""
+        else:
+            prompt = f"""You are a report structure expert. Generate an outline.
+
+Topic: {research_context.research_topic}
+Objective: {research_context.research_objective}
+Iterations: {research_context.current_iteration}
+Key Findings: {findings[:2000]}
+
+Generate outline in JSON:
+{{
+    "title": "Report Title",
+    "sections": [
+        {{"title": "Section Title", "level": 1, "focus": "focus area", "subsections": ["sub1", "sub2"]}}
+    ]
+}}
+"""
+
+        if self.llm:
+            try:
+                response = await self.llm.ainvoke(prompt)
+                text = response.content if hasattr(response, "content") else str(response)
+                result = self._extract_json(text)
+                if result and "sections" in result:
+                    return result
+            except Exception as e:
+                logger.warning(f"[ReportWriter] 大纲生成失败: {e}")
+
+        # 默认大纲
+        return {
+            "title": f"{research_context.research_topic} 研究报告",
+            "sections": [
+                {"title": "引言", "level": 1, "focus": "背景介绍", "subsections": []},
+                {"title": "研究方法", "level": 1, "focus": "方法论", "subsections": []},
+                {"title": "主要发现", "level": 1, "focus": "核心结果", "subsections": []},
+                {"title": "分析与讨论", "level": 1, "focus": "深入分析", "subsections": []},
+                {"title": "结论与展望", "level": 1, "focus": "总结", "subsections": []},
+            ],
+        }
+
+    async def write_abstract(
+        self,
+        research_context: ResearchContext,
+        outline: Dict[str, Any],
+    ) -> str:
+        """撰写报告摘要"""
+        language = self._detect_language(research_context.research_topic)
+        findings = self._extract_key_findings(research_context)
+
+        if language == "zh":
+            prompt = f"""请为以下研究报告撰写摘要（200-400字）。
+
+报告标题: {outline.get('title', research_context.research_topic)}
+研究主题: {research_context.research_topic}
+研究目标: {research_context.research_objective}
+关键发现: {findings[:1500]}
+
+摘要应包含：研究背景、方法、主要发现、结论。
+请直接输出摘要文本。
+"""
+        else:
+            prompt = f"""Write an abstract (200-400 words) for this research report.
+
+Title: {outline.get('title', research_context.research_topic)}
+Topic: {research_context.research_topic}
+Objective: {research_context.research_objective}
+Key Findings: {findings[:1500]}
+
+Include: background, methods, key findings, conclusions.
+Output the abstract text directly.
+"""
+
+        if self.llm:
+            try:
+                response = await self.llm.ainvoke(prompt)
+                text = response.content if hasattr(response, "content") else str(response)
+                return text.strip()
+            except Exception as e:
+                logger.warning(f"[ReportWriter] 摘要撰写失败: {e}")
+
+        return f"本报告对「{research_context.research_topic}」进行了系统性研究。"
+
+    async def write_section(
+        self,
+        research_context: ResearchContext,
+        section_info: Dict[str, Any],
+    ) -> ReportSection:
+        """撰写单个章节"""
+        language = self._detect_language(research_context.research_topic)
+        section_title = section_info.get("title", "")
+        section_focus = section_info.get("focus", "")
+        findings = self._extract_key_findings(research_context)
+        sources = self._format_sources(research_context)
+
+        if language == "zh":
+            prompt = f"""请撰写研究报告的以下章节。
+
+研究主题: {research_context.research_topic}
+章节标题: {section_title}
+章节重点: {section_focus}
+相关发现: {findings[:2000]}
+信息来源: {sources[:1000]}
+
+要求：
+1. 内容详实，有据可查
+2. 逻辑清晰，层次分明
+3. 适当引用来源（使用[数字]格式）
+4. 300-800字
+
+请直接输出章节内容。
+"""
+        else:
+            prompt = f"""Write the following section of a research report.
+
+Topic: {research_context.research_topic}
+Section: {section_title}
+Focus: {section_focus}
+Findings: {findings[:2000]}
+Sources: {sources[:1000]}
+
+Requirements:
+1. Well-supported content
+2. Clear logical structure
+3. Proper citations (use [number] format)
+4. 300-800 words
+
+Output the section content directly.
+"""
+
+        content = ""
+        if self.llm:
+            try:
+                response = await self.llm.ainvoke(prompt)
+                content = response.content if hasattr(response, "content") else str(response)
+                content = content.strip()
+            except Exception as e:
+                logger.warning(f"[ReportWriter] 章节撰写失败: {e}")
+                content = f"（{section_title}内容待补充）"
+
+        # 构建子章节
+        subsections = []
+        for sub_title in section_info.get("subsections", []):
+            if isinstance(sub_title, str):
+                subsections.append(ReportSection(
+                    title=sub_title,
+                    content="",
+                    level=2,
+                ))
+            elif isinstance(sub_title, dict):
+                sub_section = await self.write_section(research_context, sub_title)
+                subsections.append(sub_section)
+
+        return ReportSection(
+            title=section_title,
+            content=content,
+            level=section_info.get("level", 1),
+            subsections=subsections,
+        )
+
+    # ========================================================================
+    # 向后兼容接口
+    # ========================================================================
+
+    def generate_complete_report(self, research_context: ResearchContext) -> ResearchReport:
+        """同步生成完整报告（向后兼容）"""
+        import asyncio
+        try:
+            loop = asyncio.get_running_loop()
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                return pool.submit(
+                    asyncio.run, self.generate_report(research_context)
+                ).result()
+        except RuntimeError:
+            return asyncio.run(self.generate_report(research_context))
+
+    # ========================================================================
+    # 辅助方法
+    # ========================================================================
+
+    def _extract_key_findings(self, context: ResearchContext) -> str:
+        """提取关键发现"""
         findings = []
         for iteration in context.iterations:
             if iteration.analysis_summary:
-                findings.append(f"Round {iteration.iteration_id}: {iteration.analysis_summary}")
+                findings.append(iteration.analysis_summary)
+            for item in iteration.knowledge_items:
+                findings.append(f"[{item.type}] {item.content}")
         
-        if context.overall_findings:
-            findings.append(f"Overall findings: {context.overall_findings}")
-        
-        return "\n".join(findings) if findings else "No specific findings recorded"
-    
-    def _extract_key_findings(self, context: ResearchContext) -> str:
-        """Extract key findings"""
+        if not findings and context.overall_findings:
+            findings.append(context.overall_findings)
+
+        # 从搜索结果中提取
+        if not findings:
+            for r in context.get_all_search_results()[:10]:
+                if isinstance(r, dict):
+                    title = r.get("title", "")
+                    snippet = r.get("snippet", "")
+                else:
+                    title = getattr(r, "title", "")
+                    snippet = getattr(r, "snippet", "")
+                if title:
+                    findings.append(f"• {title}: {snippet[:100]}")
+
+        return "\n".join(findings[:30]) if findings else "暂无"
+
+    def _format_sources(self, context: ResearchContext) -> str:
+        """格式化信息来源"""
+        sources = []
         all_results = context.get_all_search_results()
-        
-        # Simple key findings extraction logic
-        key_points = []
-        
-        # Extract key information from search results
-        for result in all_results[:10]:  # Take the first 10 results
-            if result.snippet:
-                key_points.append(f"• {result.title}: {result.snippet[:100]}...")
-        
-        return "\n".join(key_points) if key_points else "No key findings"
-    
-    def _create_citations_for_results(self, results: List[SearchResult]) -> List[Citation]:
-        """Create citations for search results"""
-        citations = []
-        for result in results:
-            citation = Citation(
-                source_url=result.url,
-                title=result.title,
-                access_date=result.timestamp
-            )
-            citations.append(citation)
-        return citations
-    
-    def _format_sources_for_writing(self, results: List[SearchResult]) -> str:
-        """Format information sources for writing"""
-        if not results:
-            return "No relevant information sources"
-        
-        formatted = []
-        for i, result in enumerate(results, 1):
-            formatted.append(
-                f"[{i}] {result.title}\n"
-                f"    Source: {result.url}\n"
-                f"    Summary: {result.snippet}\n"
-            )
-        
-        return "\n".join(formatted)
-    
-    def _filter_relevant_results(self, results: List[SearchResult], section_title: str) -> List[SearchResult]:
-        """Filter search results relevant to the section"""
-        # Simple relevance filtering logic
-        # More complex relevance algorithms can be implemented as needed
-        relevant = []
-        
-        section_keywords = section_title.lower().split()
-        
-        for result in results:
-            # Check if title and summary contain section keywords
-            text = (result.title + " " + result.snippet).lower()
-            relevance_score = sum(1 for keyword in section_keywords if keyword in text)
-            
-            if relevance_score > 0:
-                result.relevance_score = relevance_score
-                relevant.append(result)
-        
-        # Sort by relevance
-        relevant.sort(key=lambda x: x.relevance_score or 0, reverse=True)
-        
-        return relevant[:10]  # Return the 10 most relevant results
-    
-    def _collect_all_citations(self, sections: List[ReportSection], 
-                              all_results: List[SearchResult]) -> List[Citation]:
-        """Collect all citations"""
+        for i, r in enumerate(all_results[:20], 1):
+            if isinstance(r, dict):
+                title = r.get("title", "")
+                url = r.get("url", "")
+                snippet = r.get("snippet", "")
+            else:
+                title = getattr(r, "title", "")
+                url = getattr(r, "url", "")
+                snippet = getattr(r, "snippet", "")
+            if title and url:
+                sources.append(f"[{i}] {title}\n    来源: {url}\n    摘要: {snippet[:100]}")
+        return "\n".join(sources) if sources else "暂无来源"
+
+    def _collect_citations(self, context: ResearchContext) -> List[Citation]:
+        """收集引用"""
         citations = []
         seen_urls = set()
-        
-        # Collect citations from sections
-        def collect_from_section(section: ReportSection):
-            for citation in section.citations:
-                if citation.source_url not in seen_urls:
-                    citations.append(citation)
-                    seen_urls.add(citation.source_url)
-            
-            for subsection in section.subsections:
-                collect_from_section(subsection)
-        
-        for section in sections:
-            collect_from_section(section)
-        
-        # Create citations for all search results (if not already created)
-        for result in all_results:
-            if result.url not in seen_urls:
-                citation = Citation(
-                    source_url=result.url,
-                    title=result.title,
-                    access_date=result.timestamp
-                )
-                citations.append(citation)
-                seen_urls.add(result.url)
-        
-        return citations
-    
-    def _create_default_outline(self, context: ResearchContext) -> Dict[str, Any]:
-        """Create default outline"""
-        # Detect language and generate appropriate content
-        detected_language = self._detect_language(context.research_topic)
-        
-        if detected_language == "zh":
-            return {
-                "title": f"{context.research_topic} - 研究报告",
-                "abstract_elements": [
-                    "研究背景", "研究目标", "主要发现", "结论"
-                ],
-                "sections": [
-                    {
-                        "title": "引言",
-                        "level": 1,
-                        "objective": "介绍研究背景和目标",
-                        "content_points": ["研究背景", "研究问题", "研究目标"],
-                        "estimated_length": "300-500字",
-                        "subsections": []
-                    },
-                    {
-                        "title": "研究发现",
-                        "level": 1,
-                        "objective": "详细阐述研究发现",
-                        "content_points": ["主要发现", "关键见解", "数据分析"],
-                        "estimated_length": "800-1200字",
-                        "subsections": []
-                    },
-                    {
-                        "title": "讨论与分析",
-                        "level": 1,
-                        "objective": "深入研究结果",
-                        "content_points": ["结果解释", "影响分析", "局限性"],
-                        "estimated_length": "600-800字",
-                        "subsections": []
-                    },
-                    {
-                        "title": "结论",
-                        "level": 1,
-                        "objective": "总结研究成果",
-                        "content_points": ["主要结论", "实际意义", "未来方向"],
-                        "estimated_length": "300-400字",
-                        "subsections": []
-                    }
-                ]
-            }
-        else:
-            return {
-                "title": f"{context.research_topic} - Research Report",
-                "abstract_elements": [
-                    "Research Background", "Research Objectives", "Main Findings", "Conclusions"
-                ],
-                "sections": [
-                    {
-                        "title": "Introduction",
-                        "level": 1,
-                        "objective": "Introduce research background and objectives",
-                        "content_points": ["Research Background", "Research Questions", "Research Objectives"],
-                        "estimated_length": "300-500 words",
-                        "subsections": []
-                    },
-                    {
-                        "title": "Research Findings",
-                        "level": 1,
-                        "objective": "Elaborate on research findings in detail",
-                        "content_points": ["Main Findings", "Key Insights", "Data Analysis"],
-                        "estimated_length": "800-1200 words",
-                        "subsections": []
-                    },
-                    {
-                        "title": "Discussion and Analysis",
-                        "level": 1,
-                        "objective": "In-depth analysis of research results",
-                        "content_points": ["Results Interpretation", "Impact Analysis", "Limitations"],
-                        "estimated_length": "600-800 words",
-                        "subsections": []
-                    },
-                    {
-                        "title": "Conclusion",
-                        "level": 1,
-                        "objective": "Summarize research achievements",
-                        "content_points": ["Main Conclusions", "Practical Implications", "Future Directions"],
-                        "estimated_length": "300-400 words",
-                        "subsections": []
-                    }
-                ]
-            }
-    
-    def _extract_json_from_response(self, response: str) -> Any:
-        """Extract JSON from response"""
-        import re
-        json_pattern = r'```json\s*([\s\S]*?)\s*```'
-        match = re.search(json_pattern, response)
-        
-        if match:
-            json_str = match.group(1)
-        else:
-            json_str = response
-        
-        try:
-            return json.loads(json_str)
-        except json.JSONDecodeError:
-            json_str = json_str.strip()
-            if not json_str.startswith(('{', '[')):
-                start_idx = max(json_str.find('{'), json_str.find('['))
-                if start_idx != -1:
-                    json_str = json_str[start_idx:]
-            
-            return json.loads(json_str)
-    
+        all_results = context.get_all_search_results()
+
+        for r in all_results:
+            if isinstance(r, dict):
+                url = r.get("url", "")
+                title = r.get("title", "")
+            else:
+                url = getattr(r, "url", "")
+                title = getattr(r, "title", "")
+
+            if url and url not in seen_urls:
+                seen_urls.add(url)
+                citations.append(Citation(
+                    source_url=url,
+                    title=title,
+                ))
+
+        return citations[:50]
+
     def _detect_language(self, text: str) -> str:
-        """Detect the language of the input text"""
-        # Simple language detection based on character sets
-        chinese_chars = sum(1 for char in text if '\u4e00' <= char <= '\u9fff')
-        total_chars = len([char for char in text if char.isalpha()])
-        
-        if total_chars == 0:
-            return "en"  # Default to English if no alphabetic characters
-        
-        chinese_ratio = chinese_chars / total_chars if total_chars > 0 else 0
-        
-        if chinese_ratio > 0.3:  # If more than 30% are Chinese characters
-            return "zh"
-        else:
-            return "en"
+        """检测文本语言"""
+        chinese_chars = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
+        return "zh" if chinese_chars > len(text) * 0.3 else "en"
+
+    def _extract_json(self, text: str) -> Dict[str, Any]:
+        """从 LLM 响应中提取 JSON"""
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+        json_match = re.search(r"\{[\s\S]*\}", text)
+        if json_match:
+            try:
+                return json.loads(json_match.group())
+            except json.JSONDecodeError:
+                pass
+
+        return {}
