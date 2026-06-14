@@ -14,6 +14,10 @@ from agenticx.flow.base import Flow
 from agenticx.flow.decorators import start, listen, router, or_
 from agenticx.llms.base import BaseLLMProvider
 from agenticx.planner.adaptive_planner import AdaptivePlanner, ExecutionPlan, PlanPatch
+from agenticx.knowledge.base import BaseKnowledge
+from agenticx.brain.manager import BrainManager
+from agenticx.memory.core_memory import CoreMemory
+from agenticx.knowledge.graphers.builder import KnowledgeGraphBuilder as GraphBuilder
 
 from agents import (
     QueryGeneratorAgent,
@@ -29,19 +33,23 @@ logger = logging.getLogger(__name__)
 
 
 class AdvancedResearchFlow(Flow[ResearchState]):
-    """深度研究工作流 (带 AdaptivePlanner)
+    """深度研究工作流 (带 AdaptivePlanner, 多脑协同, 长程记忆和 GraphRAG)
     
     流程：
-    Start -> Initial Plan -> Generate Queries -> Search & Summarize -> Analyze & Re-plan -> [Router]
-                                                                        |               |
-                                                                        V               V
-                                                                   Apply Patch      Write Report
+    Start (Multi-Brain Retrieval) -> Initial Plan -> Generate Queries -> Search & Summarize -> Analyze & Re-plan -> [Router]
+                                                                                             |               |
+                                                                                             V               V
+                                                                                        Apply Patch      Write Report -> Graph Export
     """
 
     def __init__(
         self,
         llm_provider: BaseLLMProvider,
         search_tools: List[BaseSearchTool],
+        knowledge_base: Optional[BaseKnowledge] = None,
+        memory: Optional[CoreMemory] = None,
+        mounted_brains: Optional[List[str]] = None,
+        enable_graph_export: bool = True,
         max_iterations: int = 5,
         min_completeness: float = 0.8,
         **kwargs
@@ -51,6 +59,11 @@ class AdvancedResearchFlow(Flow[ResearchState]):
         self.search_tools = search_tools
         self.max_iterations = max_iterations
         self.min_completeness = min_completeness
+        self.enable_graph_export = enable_graph_export
+        
+        # 第三阶段引入：多脑管理
+        self.brain_manager = BrainManager.instance()
+        self.mounted_brains = mounted_brains or []
         
         # 初始化 Agents
         self.query_gen = QueryGeneratorAgent(llm_provider=self.llm)
@@ -64,6 +77,15 @@ class AdvancedResearchFlow(Flow[ResearchState]):
         # 初始化 Planner
         self.planner = AdaptivePlanner(llm=self.llm)
         self.execution_plan: Optional[ExecutionPlan] = None
+        
+        # 注入知识库和记忆
+        if knowledge_base:
+            self.state.knowledge_base = knowledge_base
+        if memory:
+            self.state.memory = memory
+            
+        # GraphRAG 导出器
+        self.graph_builder = GraphBuilder(llm=self.llm)
 
     @start()
     async def initialize_research(self):
@@ -73,12 +95,40 @@ class AdvancedResearchFlow(Flow[ResearchState]):
         self.state.context.research_objective = self.state.objective
         self.state.context.current_iteration = 0
         
+        # 记录记忆：初始化
+        if self.state.memory:
+            await self.state.memory.update_agent_state(
+                state_data={"topic": self.state.topic, "mode": "advanced"},
+                description=f"开始高级深度调研: {self.state.topic}"
+            )
+        
+        # 第三阶段：从挂载的脑中检索背景知识
+        background_context = ""
+        if self.mounted_brains:
+            logger.info(f"Retrieving background context from {len(self.mounted_brains)} mounted brains...")
+            for brain_id in self.mounted_brains:
+                try:
+                    runtime = self.brain_manager.get_runtime(brain_id)
+                    search_response = await runtime.search(self.state.topic, limit=3)
+                    if search_response and hasattr(search_response, 'hits') and search_response.hits:
+                        hits_content = [hit.content for hit in search_response.hits]
+                        background_context += f"\n[Brain: {brain_id}] " + "\n".join(hits_content)
+                except Exception as e:
+                    logger.warning(f"Failed to search brain {brain_id}: {e}")
+        
         # 生成初始计划
         logger.info("Generating initial execution plan...")
         self.execution_plan = await self.planner.generate_initial_plan(
-            goal=f"对主题 '{self.state.topic}' 进行深度调研。目标: {self.state.objective or '全面了解'}"
+            goal=f"对主题 '{self.state.topic}' 进行深度调研。目标: {self.state.objective or '全面了解'}",
+            context=background_context
         )
         logger.info(f"Initial plan created with {len(self.execution_plan.stages)} stages")
+        
+        if self.state.memory:
+            await self.state.memory.add(
+                content=f"已生成初始执行计划，包含 {len(self.execution_plan.stages)} 个阶段。",
+                importance=3
+            )
 
     @listen(or_(initialize_research, "continue_search"))
     async def generate_queries(self):
@@ -92,7 +142,6 @@ class AdvancedResearchFlow(Flow[ResearchState]):
         subtask_context = ", ".join([s.query for s in subtasks]) if subtasks else "常规搜索"
         
         logger.info(f"--- Iteration {it_num} (Stage: {current_stage.name if current_stage else 'N/A'}) ---")
-        logger.info(f"Focusing on subtasks: {subtask_context}")
 
         queries = await self.query_gen.generate_queries(
             research_topic=self.state.topic,
@@ -107,7 +156,7 @@ class AdvancedResearchFlow(Flow[ResearchState]):
         for s in subtasks:
             s.mark_executing()
             
-        return queries
+        # return queries  # 移除返回值，防止 Flow 错误返回
 
     @listen(generate_queries)
     async def execute_search_and_summarize(self):
@@ -126,6 +175,18 @@ class AdvancedResearchFlow(Flow[ResearchState]):
             )
             round_summaries.append(summary)
             
+            # 第三阶段：存入知识库
+            if self.state.knowledge_base:
+                await self.state.knowledge_base.add_text(
+                    text=summary,
+                    metadata={
+                        "topic": self.state.topic,
+                        "query": query.query,
+                        "iteration": self.state.context.current_iteration,
+                        "type": "research_summary"
+                    }
+                )
+            
         iteration.analysis_summary = "\n\n".join(round_summaries)
         self.state.context.add_iteration(iteration)
         self.state.summaries.extend(round_summaries)
@@ -137,7 +198,6 @@ class AdvancedResearchFlow(Flow[ResearchState]):
                 if s.status == SubtaskStatus.EXECUTING:
                     s.mark_completed(result=iteration.analysis_summary[:200] + "...")
             
-            # 检查阶段是否完成
             if all(s.status == SubtaskStatus.COMPLETED for s in self.execution_plan.current_stage.subtasks):
                 self.execution_plan.current_stage.complete(summary=iteration.analysis_summary[:200] + "...")
                 self.execution_plan.current_stage_index += 1
@@ -156,22 +216,27 @@ class AdvancedResearchFlow(Flow[ResearchState]):
             iteration_number=self.state.context.current_iteration
         )
         
-        # 记录反思到状态
         completeness = reflection.get("completeness_score", 0.5)
         
+        # 记录记忆：反思结果
+        if self.state.memory:
+            await self.state.memory.add(
+                content=f"迭代 {self.state.context.current_iteration} 反思: {reflection.get('reflection_summary', '')}",
+                importance=4
+            )
+        
         # 调用 AdaptivePlanner 提出计划修补方案
-        logger.info("Proposing plan patch based on execution snapshot...")
         patch: PlanPatch = await self.planner.propose_plan_patch(
             plan=self.execution_plan,
             observation=f"当前迭代发现: {reflection.get('reflection_summary', '')}\n知识空白: {reflection.get('identified_gaps', [])}"
         )
         
         if patch and (patch.added_stages or patch.added_subtasks or patch.deleted_subtasks):
-            logger.info(f"Applying plan patch: added {len(patch.added_stages)} stages, {len(patch.added_subtasks)} subtasks")
+            logger.info(f"Applying plan patch...")
             self.execution_plan.apply_patch(patch)
+            if self.state.memory:
+                await self.state.memory.add(content="执行计划已根据新发现动态调整。", importance=3)
         else:
-            logger.info("No plan adjustments needed.")
-            # 如果当前阶段已完成且没有 patch，尝试推进阶段
             from agenticx.flow.execution_plan import StageStatus
             if self.execution_plan.current_stage and self.execution_plan.current_stage.status == StageStatus.DONE:
                 self.execution_plan.current_stage_index += 1
@@ -190,19 +255,45 @@ class AdvancedResearchFlow(Flow[ResearchState]):
         it_num = self.state.context.current_iteration
         
         if is_plan_done or completeness >= self.min_completeness or it_num >= self.max_iterations:
-            logger.info("Research flow finishing (Plan done or threshold met).")
             return "write_report"
         else:
             return "continue_search"
 
     @listen("write_report")
     async def finalize_report(self):
-        """生成最终报告"""
-        logger.info("Generating final report with all gathered insights...")
+        """生成最终报告并导出知识图谱"""
+        logger.info("Generating final report and exporting to GraphRAG...")
         
         report_obj = await self.report_writer.generate_report(
             research_context=self.state.context
         )
         report = report_obj.to_markdown()
         self.state.final_report = report
+        
+        # 第三阶段：将最终报告存入知识库
+        if self.state.knowledge_base:
+            await self.state.knowledge_base.add_text(
+                text=report,
+                metadata={"topic": self.state.topic, "type": "final_report"}
+            )
+            
+        # 第三阶段：自动导出至 GraphRAG
+        if self.enable_graph_export and self.state.knowledge_base:
+            try:
+                logger.info("Building knowledge graph from research findings...")
+                # 提取实体和关系
+                graph_data = await self.graph_builder.build_from_text(
+                    text="\n\n".join(self.state.summaries) + "\n\n" + report,
+                    topic=self.state.topic
+                )
+                # 如果知识库支持图谱，则存入
+                if hasattr(self.state.knowledge_base, 'add_graph'):
+                    await self.state.knowledge_base.add_graph(graph_data)
+                    logger.info(f"Successfully exported {len(graph_data.entities)} entities to GraphRAG.")
+            except Exception as e:
+                logger.error(f"Failed to export to GraphRAG: {e}")
+            
+        if self.state.memory:
+            await self.state.memory.add(content=f"调研报告已生成并同步至知识图谱，主题: {self.state.topic}", importance=5)
+            
         return report
