@@ -1,0 +1,1 @@
+{"thinking": "Analysis complete", "insights": ["insight1"], "knowledge_gaps": []}

@@ -1,8 +1,9 @@
 """
-Query Generator Agent
+Query Generator Agent (v2 - ReActAgent Based)
 
-基于 AgenticX 框架的查询生成智能体。
-负责根据研究主题、上下文和知识空白生成高质量的搜索查询。
+基于 AgenticX ReActAgent 异步版本的查询生成智能体。
+利用 function calling 原生能力，通过 Tool 接口实现查询策略选择和生成。
+支持流式事件输出和循环检测。
 """
 
 import json
@@ -10,10 +11,11 @@ import logging
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 
-from agenticx.core.agent import Agent, AgentContext, AgentResult
+from agenticx.agents.react_agent_async import ReActAgent, ReActResult
 from agenticx.llms.base import BaseLLMProvider
+from agenticx.tools.base import BaseTool
 
 from models import SearchQuery, QueryType, KnowledgeGap, ResearchPhase, SearchEngine
 
@@ -44,51 +46,29 @@ class QueryComplexity(str, Enum):
 
 
 # ============================================================================
-# Query Generator Agent
+# Query Generation Tool (供 ReActAgent 调用)
 # ============================================================================
 
-class QueryGeneratorAgent(Agent):
-    """查询生成智能体
+class QueryGenerationTool(BaseTool):
+    """查询生成工具
     
-    基于 agenticx.core.agent.Agent 实现，提供：
-    1. 智能查询生成（基于 LLM）
-    2. 多策略查询优化
-    3. 知识空白导向查询
-    4. 查询质量评估
-    5. 多语言查询支持
+    封装查询生成的核心逻辑为 BaseTool，供 ReActAgent 通过 function calling 调用。
+    支持多策略生成、模板回退和去重。
     """
 
-    def __init__(
-        self,
-        name: str = "查询生成专家",
-        role: str = "搜索查询策略师",
-        goal: str = "生成高质量、多样化的搜索查询以支持深度研究",
-        organization_id: str = "deepsearch",
-        llm_provider: Optional[Any] = None,
-        **kwargs
-    ):
+    def __init__(self):
         super().__init__(
-            name=name,
-            role=role,
-            goal=goal,
-            organization_id=organization_id,
-            backstory=(
-                "你是一位经验丰富的搜索查询专家，擅长根据研究主题和上下文生成精确且多样化的搜索查询。"
-                "你精通各种搜索策略，能够识别知识空白并制定相应的查询计划。"
+            name="generate_search_queries",
+            description=(
+                "根据研究主题、策略和知识空白生成搜索查询。"
+                "输入参数: topic(研究主题), strategy(策略: broad_exploration/focused_deep_dive/"
+                "gap_filling/verification/comparative/temporal/multi_perspective), "
+                "max_queries(最大数量), knowledge_gaps(知识空白列表,可选), "
+                "previous_queries(已有查询列表,可选), language(zh/en)"
             ),
-            **kwargs
         )
-
-        # 使用 object.__setattr__ 绕过 Pydantic 验证存储运行时状态
-        object.__setattr__(self, "llm", llm_provider)
-        object.__setattr__(self, "generated_queries_cache", set())
-        object.__setattr__(self, "query_stats", {
-            "total_generated": 0,
-            "strategies_used": {},
-        })
-
-        # 查询模板
-        object.__setattr__(self, "query_templates", {
+        self._generated_cache: Set[str] = set()
+        self._query_templates = {
             QueryStrategy.BROAD_EXPLORATION: [
                 "{topic} 概述",
                 "{topic} 基本概念",
@@ -130,7 +110,122 @@ class QueryGeneratorAgent(Agent):
                 "{topic} 社会影响",
                 "{topic} 政策法规",
             ],
-        })
+        }
+
+    def _run(
+        self,
+        topic: str = "",
+        strategy: str = "broad_exploration",
+        max_queries: int = 5,
+        knowledge_gaps: Optional[List[str]] = None,
+        previous_queries: Optional[List[str]] = None,
+        language: str = "zh",
+        **kwargs,
+    ) -> str:
+        """同步执行查询生成（模板回退模式）"""
+        try:
+            strategy_enum = QueryStrategy(strategy)
+        except ValueError:
+            strategy_enum = QueryStrategy.BROAD_EXPLORATION
+
+        templates = self._query_templates.get(strategy_enum, [])
+        queries = []
+
+        gap_area = knowledge_gaps[0] if knowledge_gaps else "核心问题"
+        alternative = "替代方案"
+
+        for template in templates:
+            try:
+                query = template.format(
+                    topic=topic,
+                    gap_area=gap_area,
+                    alternative=alternative,
+                )
+                queries.append(query)
+            except (KeyError, IndexError):
+                queries.append(template.replace("{topic}", topic))
+
+        # 去重
+        prev_set = set(q.lower().strip() for q in (previous_queries or []))
+        unique = []
+        for q in queries:
+            normalized = q.strip().lower()
+            if normalized not in prev_set and normalized not in self._generated_cache:
+                self._generated_cache.add(normalized)
+                unique.append(q.strip())
+
+        result = unique[:max_queries]
+        return json.dumps({"queries": result}, ensure_ascii=False)
+
+
+# ============================================================================
+# Query Generator Agent (ReActAgent Wrapper)
+# ============================================================================
+
+class QueryGeneratorAgent:
+    """查询生成智能体 (v2 - ReActAgent Based)
+    
+    基于 agenticx.agents.ReActAgent 异步版本实现：
+    1. 原生 function calling 能力
+    2. 流式事件输出 (astream)
+    3. 循环检测与自动 nudge
+    4. 多策略查询生成
+    5. 知识空白导向查询
+    6. 多语言查询支持
+    
+    Usage:
+        agent = QueryGeneratorAgent(llm_provider=my_llm)
+        queries = await agent.generate_queries(
+            research_topic="人工智能最新进展",
+            research_context={},
+            knowledge_gaps=[],
+            iteration_number=1,
+        )
+    """
+
+    def __init__(
+        self,
+        llm_provider: Optional[BaseLLMProvider] = None,
+        max_iterations: int = 5,
+        **kwargs,
+    ):
+        self.llm = llm_provider
+        self._query_tool = QueryGenerationTool()
+        self._max_iterations = max_iterations
+        self._stats = {
+            "total_generated": 0,
+            "strategies_used": {},
+        }
+
+        # 构建 ReActAgent（如果有 LLM）
+        self._react_agent: Optional[ReActAgent] = None
+        if self.llm is not None:
+            self._react_agent = ReActAgent(
+                llm=self.llm,
+                tools=[self._query_tool],
+                system_prompt=self._build_system_prompt(),
+                max_iterations=self._max_iterations,
+            )
+
+    def _build_system_prompt(self) -> str:
+        return """你是一位专业的搜索查询策略师。你的任务是根据研究主题和上下文生成高质量的搜索查询。
+
+你拥有以下能力：
+1. 使用 generate_search_queries 工具生成搜索查询
+2. 根据研究阶段选择最优策略
+3. 针对知识空白生成补充查询
+4. 确保查询多样性和去重
+
+工作流程：
+1. 分析用户的研究需求和当前阶段
+2. 确定最佳查询策略
+3. 调用工具生成查询
+4. 如果需要，可以多次调用工具使用不同策略来丰富查询集
+5. 最终返回所有生成的查询（JSON 格式）
+
+最终输出格式（纯 JSON，不要 markdown 代码块）：
+{"queries": ["query1", "query2", ...]}
+"""
 
     # ========================================================================
     # 公共接口
@@ -159,24 +254,21 @@ class QueryGeneratorAgent(Agent):
         language = self._detect_language(research_topic)
         strategy = self._determine_strategy(iteration_number, knowledge_gaps)
 
-        # 使用 LLM 生成查询（如果可用）
-        if self.llm is not None:
-            queries = await self._generate_with_llm(
+        # 使用 ReActAgent 生成查询（如果可用）
+        if self._react_agent is not None:
+            queries = await self._generate_with_react_agent(
                 research_topic, research_context, knowledge_gaps,
                 iteration_number, strategy, max_queries, language
             )
         else:
-            # 回退到模板生成
-            queries = self._generate_from_templates(
+            # 回退到直接调用工具
+            queries = self._generate_with_tool_directly(
                 research_topic, knowledge_gaps, strategy, max_queries, language
             )
 
-        # 去重
-        unique_queries = self._deduplicate(queries)
-
         # 转换为 SearchQuery 模型
         search_queries = []
-        for q_text in unique_queries[:max_queries]:
+        for q_text in queries[:max_queries]:
             sq = SearchQuery(
                 query=q_text,
                 query_type=self._infer_query_type(iteration_number, strategy),
@@ -187,11 +279,36 @@ class QueryGeneratorAgent(Agent):
             search_queries.append(sq)
 
         # 更新统计
-        stats = self.query_stats
-        stats["total_generated"] += len(search_queries)
-        stats["strategies_used"][strategy.value] = stats["strategies_used"].get(strategy.value, 0) + 1
+        self._stats["total_generated"] += len(search_queries)
+        self._stats["strategies_used"][strategy.value] = (
+            self._stats["strategies_used"].get(strategy.value, 0) + 1
+        )
 
         return search_queries
+
+    async def generate_queries_stream(
+        self,
+        research_topic: str,
+        research_context: Dict[str, Any],
+        knowledge_gaps: List[KnowledgeGap],
+        iteration_number: int,
+        max_queries: int = 10,
+    ):
+        """流式生成查询（返回 AgentEvent 迭代器）
+        
+        用于需要实时观察 Agent 推理过程的场景。
+        """
+        if self._react_agent is None:
+            return
+
+        user_message = self._build_user_message(
+            research_topic, research_context, knowledge_gaps,
+            iteration_number, max_queries,
+            self._detect_language(research_topic),
+        )
+
+        async for event in self._react_agent.astream(user_message):
+            yield event
 
     def generate_initial_queries(self, research_topic: str, num_queries: int = 3) -> str:
         """生成初始搜索查询的 Prompt（向后兼容）"""
@@ -234,11 +351,16 @@ Return in JSON format:
 }}
 """
 
+    @property
+    def query_stats(self) -> Dict[str, Any]:
+        """获取查询统计"""
+        return self._stats
+
     # ========================================================================
     # 内部方法
     # ========================================================================
 
-    async def _generate_with_llm(
+    async def _generate_with_react_agent(
         self,
         topic: str,
         context: Dict[str, Any],
@@ -248,64 +370,24 @@ Return in JSON format:
         max_queries: int,
         language: str,
     ) -> List[str]:
-        """使用 LLM 生成查询"""
-        previous_queries = context.get("previous_queries", [])
-        gaps_text = "\n".join(f"- {g.topic}: {g.description}" for g in gaps) if gaps else "暂无"
-
-        if language == "zh":
-            prompt = f"""你是一位搜索查询生成专家。请根据以下信息生成{max_queries}个高质量搜索查询。
-
-研究主题: {topic}
-当前策略: {strategy.value}
-迭代轮次: 第{iteration}轮
-知识空白:
-{gaps_text}
-
-已有查询（避免重复）:
-{chr(10).join(f'- {q}' for q in previous_queries[-10:]) if previous_queries else '暂无'}
-
-要求：
-1. 查询应多样化，覆盖不同角度
-2. 避免与已有查询重复
-3. 针对知识空白生成补充查询
-4. 查询简洁精确，适合搜索引擎
-
-请以JSON格式返回：
-{{"queries": ["query1", "query2", ...]}}
-"""
-        else:
-            prompt = f"""You are a search query generation expert. Generate {max_queries} high-quality queries.
-
-Research Topic: {topic}
-Strategy: {strategy.value}
-Iteration: {iteration}
-Knowledge Gaps:
-{gaps_text}
-
-Previous queries (avoid duplicates):
-{chr(10).join(f'- {q}' for q in previous_queries[-10:]) if previous_queries else 'None'}
-
-Requirements:
-1. Diverse queries covering different angles
-2. Avoid duplicating previous queries
-3. Generate gap-filling queries
-4. Concise and search-engine friendly
-
-Return in JSON: {{"queries": ["query1", "query2", ...]}}
-"""
+        """使用 ReActAgent 生成查询"""
+        user_message = self._build_user_message(
+            topic, context, gaps, iteration, max_queries, language
+        )
 
         try:
-            # 使用新的 invoke/ainvoke 接口
-            response = await self.llm.ainvoke(prompt)
-            response_text = response.content if hasattr(response, "content") else str(response)
-            parsed = self._extract_json(response_text)
-            queries = parsed.get("queries", [])
-            return [q for q in queries if isinstance(q, str) and q.strip()]
+            result: ReActResult = await self._react_agent.arun(user_message)
+            if result.success and result.output:
+                return self._parse_queries_from_output(result.output)
         except Exception as e:
-            logger.warning(f"[QueryGenerator] LLM 生成失败，回退到模板: {e}")
-            return self._generate_from_templates(topic, gaps, strategy, max_queries, language)
+            logger.warning(f"[QueryGenerator] ReActAgent 生成失败，回退到工具直调: {e}")
 
-    def _generate_from_templates(
+        # 回退
+        return self._generate_with_tool_directly(
+            topic, gaps, strategy, max_queries, language
+        )
+
+    def _generate_with_tool_directly(
         self,
         topic: str,
         gaps: List[KnowledgeGap],
@@ -313,24 +395,88 @@ Return in JSON: {{"queries": ["query1", "query2", ...]}}
         max_queries: int,
         language: str,
     ) -> List[str]:
-        """基于模板生成查询"""
-        queries = []
-        templates = self.query_templates.get(strategy, [])
+        """直接调用工具生成查询（无 LLM 回退）"""
+        gap_texts = [g.topic for g in gaps] if gaps else None
+        result_json = self._query_tool._run(
+            topic=topic,
+            strategy=strategy.value,
+            max_queries=max_queries,
+            knowledge_gaps=gap_texts,
+            language=language,
+        )
+        try:
+            parsed = json.loads(result_json)
+            return parsed.get("queries", [])
+        except json.JSONDecodeError:
+            return []
 
-        for template in templates:
+    def _build_user_message(
+        self,
+        topic: str,
+        context: Dict[str, Any],
+        gaps: List[KnowledgeGap],
+        iteration: int,
+        max_queries: int,
+        language: str,
+    ) -> str:
+        """构建发送给 ReActAgent 的用户消息"""
+        previous_queries = context.get("previous_queries", [])
+        gaps_text = "\n".join(f"- {g.topic}: {g.description}" for g in gaps) if gaps else "暂无"
+        strategy = self._determine_strategy(iteration, gaps)
+
+        if language == "zh":
+            return f"""请为以下研究生成 {max_queries} 个高质量搜索查询。
+
+研究主题: {topic}
+推荐策略: {strategy.value}
+迭代轮次: 第{iteration}轮
+知识空白:
+{gaps_text}
+
+已有查询（避免重复）:
+{chr(10).join(f'- {q}' for q in previous_queries[-10:]) if previous_queries else '暂无'}
+
+请使用 generate_search_queries 工具生成查询，然后返回最终的查询列表。
+"""
+        else:
+            return f"""Generate {max_queries} high-quality search queries for this research.
+
+Topic: {topic}
+Recommended Strategy: {strategy.value}
+Iteration: {iteration}
+Knowledge Gaps:
+{gaps_text}
+
+Previous queries (avoid duplicates):
+{chr(10).join(f'- {q}' for q in previous_queries[-10:]) if previous_queries else 'None'}
+
+Use the generate_search_queries tool and return the final query list.
+"""
+
+    def _parse_queries_from_output(self, output: str) -> List[str]:
+        """从 ReActAgent 输出中解析查询列表"""
+        # 尝试直接 JSON 解析
+        try:
+            parsed = json.loads(output)
+            if isinstance(parsed, dict) and "queries" in parsed:
+                return [q for q in parsed["queries"] if isinstance(q, str) and q.strip()]
+        except json.JSONDecodeError:
+            pass
+
+        # 尝试从文本中提取 JSON
+        import re
+        json_match = re.search(r"\{[\s\S]*\}", output)
+        if json_match:
             try:
-                gap_area = gaps[0].topic if gaps else "核心问题"
-                alternative = "替代方案"
-                query = template.format(
-                    topic=topic,
-                    gap_area=gap_area,
-                    alternative=alternative,
-                )
-                queries.append(query)
-            except (KeyError, IndexError):
-                queries.append(template.replace("{topic}", topic))
+                parsed = json.loads(json_match.group())
+                if isinstance(parsed, dict) and "queries" in parsed:
+                    return [q for q in parsed["queries"] if isinstance(q, str) and q.strip()]
+            except json.JSONDecodeError:
+                pass
 
-        return queries[:max_queries]
+        # 尝试按行解析
+        lines = [l.strip().lstrip("- ").lstrip("* ") for l in output.split("\n") if l.strip()]
+        return [l for l in lines if len(l) > 3 and not l.startswith("{")]
 
     def _determine_strategy(
         self, iteration: int, gaps: List[KnowledgeGap]
@@ -358,39 +504,7 @@ Return in JSON: {{"queries": ["query1", "query2", ...]}}
         else:
             return QueryType.FOLLOWUP
 
-    def _deduplicate(self, queries: List[str]) -> List[str]:
-        """查询去重"""
-        seen = set()
-        unique = []
-        cache: set = self.generated_queries_cache
-        for q in queries:
-            normalized = q.strip().lower()
-            if normalized not in seen and normalized not in cache:
-                seen.add(normalized)
-                cache.add(normalized)
-                unique.append(q.strip())
-        return unique
-
     def _detect_language(self, text: str) -> str:
         """检测文本语言"""
         chinese_chars = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
         return "zh" if chinese_chars > len(text) * 0.3 else "en"
-
-    def _extract_json(self, text: str) -> Dict[str, Any]:
-        """从 LLM 响应中提取 JSON"""
-        # 尝试直接解析
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            pass
-
-        # 尝试提取 JSON 块
-        import re
-        json_match = re.search(r"\{[\s\S]*\}", text)
-        if json_match:
-            try:
-                return json.loads(json_match.group())
-            except json.JSONDecodeError:
-                pass
-
-        return {"queries": []}
