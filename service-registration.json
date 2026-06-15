@@ -1,0 +1,12 @@
+{
+  "name": "AgenticX Deep Research Service",
+  "description": "Premium deep research agent powered by AgenticX. Performs multi-iteration, adaptive research on any topic and generates structured reports with citations and knowledge graphs. Supports MCP (Model Context Protocol) for seamless integration with IronClaw and other NEAR AI agents.",
+  "category": "research",
+  "pricing_model": "per_call",
+  "price_amount": "0.5",
+  "endpoint_url": "https://YOUR_DEPLOYMENT_DOMAIN/protocols/mcp/call",
+  "tags": ["research", "analysis", "deep-dive", "report", "knowledge-graph", "mcp", "agenticx"],
+  "enabled": true,
+  "response_time_seconds": 600,
+  "settlement_interval": 10
+}

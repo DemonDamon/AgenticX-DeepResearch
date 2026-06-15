@@ -1,0 +1,33 @@
+version: "3.9"
+
+services:
+  agenticx-deepresearch:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agenticx-deepresearch
+    ports:
+      - "8000:8000"
+    environment:
+      # LLM 配置（必填）
+      - KIMI_API_KEY=${KIMI_API_KEY}
+      - KIMI_API_BASE=${KIMI_API_BASE:-https://api.moonshot.cn/v1}
+      # 搜索引擎配置（至少配置一个）
+      - BOCHAAI_API_KEY=${BOCHAAI_API_KEY}
+      - BING_SUBSCRIPTION_KEY=${BING_SUBSCRIPTION_KEY}
+      # 数据库配置
+      - DATABASE_URL=sqlite:////app/data/research.db
+      # 服务端口
+      - PORT=8000
+    volumes:
+      # 持久化数据库和输出文件
+      - ./data:/app/data
+      - ./output:/app/output
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
