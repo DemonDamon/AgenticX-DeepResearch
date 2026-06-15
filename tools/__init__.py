@@ -17,6 +17,9 @@ from .bing_search import BingWebSearchTool, MockBingSearchTool
 # Google 搜索引擎
 from .google_search import GoogleSearchTool, MockGoogleSearchTool
 
+# 多模态工具
+from .multimodal_doc import MultimodalDocTool
+
 __all__ = [
     # 基础抽象和数据模型
     "BaseSearchTool",
@@ -32,4 +35,6 @@ __all__ = [
     # Google
     "GoogleSearchTool",
     "MockGoogleSearchTool",
+    # Multimodal
+    "MultimodalDocTool",
 ]

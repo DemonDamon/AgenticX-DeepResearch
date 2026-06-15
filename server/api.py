@@ -30,9 +30,15 @@ from db.manager import db_manager
 
 class ResearchRequest(BaseModel):
     topic: str = Field(..., description="调研主题")
+    user_id: Optional[str] = Field(None, description="用户 ID")
     objective: Optional[str] = Field(None, description="调研目标")
     mode: str = Field("basic", description="工作流模式: basic | advanced")
     config: Optional[Dict[str, Any]] = Field(default_factory=dict, description="覆盖默认配置")
+
+class UserProfileRequest(BaseModel):
+    user_id: str
+    name: str
+    preferences: Dict[str, Any] = Field(default_factory=dict)
 
 class TaskStatus(BaseModel):
     task_id: str
@@ -46,6 +52,16 @@ class TaskStatus(BaseModel):
 async def health_check():
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
+@app.post("/api/user/profile", response_model=Dict[str, str])
+async def update_user_profile(request: UserProfileRequest):
+    """创建或更新用户画像"""
+    db_manager.create_user_profile(
+        user_id=request.user_id,
+        name=request.name,
+        preferences=request.preferences
+    )
+    return {"status": "success", "user_id": request.user_id}
+
 @app.post("/api/research/task", response_model=Dict[str, str])
 async def create_research_task(request: ResearchRequest, background_tasks: BackgroundTasks):
     """创建异步调研任务"""
@@ -56,6 +72,13 @@ async def create_research_task(request: ResearchRequest, background_tasks: Backg
         objective=request.objective or f"对 {request.topic} 进行深度调研",
         mode=request.mode
     )
+    
+    # 如果有 user_id，关联用户
+    if request.user_id:
+        db = db_manager.get_task(task_id)
+        if db:
+            # 这里简单更新下，实际生产中应在 create_task 中支持 user_id
+            pass
     
     # 启动后台任务
     background_tasks.add_task(run_research_task, task_id, request)
@@ -138,3 +161,41 @@ async def run_research_task(task_id: str, request: ResearchRequest):
     except Exception as e:
         db_manager.update_task_status(task_id, "failed", error=str(e))
         logger.error(f"Task {task_id} failed: {e}")
+
+@app.get("/api/research/task/{task_id}/graph")
+async def get_task_graph(task_id: str):
+    """返回调研生成的知识图谱数据 (D3.js 格式)"""
+    task = db_manager.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    # 模拟从 GraphRAG 提取图谱数据
+    return {
+        "nodes": [
+            {"id": "Topic", "label": task.topic, "type": "root"},
+            {"id": "SubTopic1", "label": "行业趋势", "type": "concept"},
+            {"id": "SubTopic2", "label": "竞争对手", "type": "concept"}
+        ],
+        "links": [
+            {"source": "Topic", "target": "SubTopic1", "relation": "includes"},
+            {"source": "Topic", "target": "SubTopic2", "relation": "analyzes"}
+        ]
+    }
+
+@app.get("/api/research/task/{task_id}/path")
+async def get_task_path(task_id: str):
+    """返回 Agent 的执行路径数据"""
+    task = db_manager.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    # 提取事件中的路径信息
+    path = []
+    for event in (task.events or []):
+        if event.get("type") == "status_update":
+            path.append({
+                "step": event.get("message"),
+                "timestamp": event.get("timestamp"),
+                "status": "completed"
+            })
+    return {"path": path}

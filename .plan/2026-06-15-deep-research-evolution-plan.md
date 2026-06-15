@@ -13,10 +13,10 @@ todos:
     status: completed
   - id: p4-service-near-adaptation
     content: "Phase 4: 服务化与 Near AI 协议适配 — FastAPI 服务化封装 + SSE 流式进度输出 + Near Agent SDK 对接"
-    status: pending
+    status: completed
   - id: p5-avatar-multimodal-evolution
     content: "Phase 5: 多模态与数字分身演进 — 引入多模态调研能力 + 调研结果可视化面板 + 数字分身身份认证"
-    status: pending
+    status: in-progress
 isProject: true
 ---
 
@@ -93,13 +93,13 @@ graph TD
 - [x] 集成 `CoreMemory` 记录调研反思
 - [x] 实现 `GraphBuilder` 自动导出知识图谱
 
-### Phase 4: 服务化与 Near AI 协议适配 (进行中)
-- [ ] **FastAPI 服务化**: 封装 Flow 接口，支持异步任务提交。
-- [ ] **SSE 流式输出**: 实现调研进度的实时推送。
-- [ ] **Near AI 对接**: 编写适配层，接入 Near Agent 协议。
-- [ ] **持久化层**: 引入数据库存储调研历史。
+### Phase 4: 服务化与 Near AI 协议适配 (已完成)
+- [x] **FastAPI 服务化**: 封装 Flow 接口，支持异步任务提交。
+- [x] **SSE 流式输出**: 实现调研进度的实时推送。
+- [x] **Near AI 对接**: 编写适配层，接入 Near Agent 协议。
+- [x] **持久化层**: 引入数据库存储调研历史。
 
-### Phase 5: 多模态与数字分身演进 (未来规划)
+### Phase 5: 多模态与数字分身演进 (进行中)
 - [ ] **多模态调研**: 支持图片、视频等非文本资料的调研分析。
 - [ ] **可视化面板**: 构建前端仪表盘，直观展示调研过程与图谱。
 - [ ] **身份认证**: 集成去中心化身份（DID），使 Agent 成为真正的数字分身。

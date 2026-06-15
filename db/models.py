@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, DateTime, JSON, create_engine
+from sqlalchemy import Column, String, Text, DateTime, JSON, ForeignKey, create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
@@ -6,10 +6,20 @@ import os
 
 Base = declarative_base()
 
+class UserProfile(Base):
+    __tablename__ = "user_profiles"
+    
+    user_id = Column(String(36), primary_key=True)
+    name = Column(String(100))
+    preferences = Column(JSON, default=dict) # 存储调研偏好，如 {"depth": "high", "focus": ["tech", "market"]}
+    interests = Column(JSON, default=list) # 关注的领域列表
+    created_at = Column(DateTime, default=datetime.utcnow)
+
 class ResearchTask(Base):
     __tablename__ = "research_tasks"
     
     task_id = Column(String(36), primary_key=True)
+    user_id = Column(String(36), ForeignKey("user_profiles.user_id"), nullable=True)
     topic = Column(String(255), nullable=False)
     objective = Column(Text)
     mode = Column(String(20), default="basic")

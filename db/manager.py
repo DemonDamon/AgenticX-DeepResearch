@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from .models import ResearchTask, SessionLocal, init_db
+from .models import ResearchTask, UserProfile, SessionLocal, init_db
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 
@@ -58,5 +58,20 @@ class DBManager:
         tasks = db.query(ResearchTask).order_by(ResearchTask.created_at.desc()).limit(limit).all()
         db.close()
         return tasks
+
+    def create_user_profile(self, user_id: str, name: str, preferences: Dict[str, Any]) -> UserProfile:
+        db = SessionLocal()
+        profile = UserProfile(user_id=user_id, name=name, preferences=preferences)
+        db.add(profile)
+        db.commit()
+        db.refresh(profile)
+        db.close()
+        return profile
+
+    def get_user_profile(self, user_id: str) -> Optional[UserProfile]:
+        db = SessionLocal()
+        profile = db.query(UserProfile).filter(UserProfile.user_id == user_id).first()
+        db.close()
+        return profile
 
 db_manager = DBManager()
