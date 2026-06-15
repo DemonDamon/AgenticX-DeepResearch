@@ -1,6 +1,6 @@
 # AgenticX-DeepResearch 架构与产物概览
 
-**作者：** Damon Li (由 Manus AI 梳理)
+**作者：** Damon Li
 **日期：** 2026-06-15
 
 本文档旨在为 AI Coding 工具（如 Cursor、Windsurf、Copilot 等）和新加入的开发者提供项目的全局视角。通过阅读本文档，AI 工具可以快速建立对代码库的上下文理解，而无需扫描全量代码。

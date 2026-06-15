@@ -1,6 +1,6 @@
 # AgenticX-DeepResearch 代码模块摘要
 
-**作者：** Damon Li (由 Manus AI 梳理)
+**作者：** Damon Li
 **日期：** 2026-06-15
 
 本文档对 `AgenticX-DeepResearch` 项目的核心代码模块进行了详细梳理。AI Coding 工具可以读取此文件，快速理解各个类和函数的职责，避免解析成千上万行的源代码。
