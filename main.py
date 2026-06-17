@@ -11,8 +11,10 @@ import os
 import sys
 import yaml
 import warnings
-from typing import Dict, Any, Optional
+from typing import AsyncGenerator, Dict, Any, Generator, List, Optional, Union
 from pathlib import Path
+
+from pydantic import Field
 
 # 过滤弃用警告
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -29,7 +31,9 @@ except ImportError:
 
 # 导入核心组件
 from agenticx.llms import OpenAIProvider
+from agenticx.llms.base import BaseLLMProvider
 from agenticx.llms.kimi_provider import KimiProvider
+from agenticx.llms.response import LLMChoice, LLMResponse, TokenUsage
 from tools import BochaaISearchTool, BingSearchTool, GoogleSearchTool
 from flows import BasicResearchFlow, AdvancedResearchFlow, ResearchState
 from utils import clean_input_text
@@ -42,6 +46,115 @@ except ImportError:
     pass
 
 console = Console() if Console else None
+
+
+class OpenAICompatibleProvider(BaseLLMProvider):
+    """Minimal OpenAI-compatible provider for custom base URLs."""
+
+    api_key: str
+    base_url: Optional[str] = None
+    timeout: Optional[float] = 300.0
+    max_retries: Optional[int] = 3
+    temperature: Optional[float] = 0.7
+    max_tokens: Optional[int] = 8192
+    client: Optional[Any] = Field(default=None, exclude=True)
+    async_client: Optional[Any] = Field(default=None, exclude=True)
+
+    def __init__(self, **data):
+        super().__init__(**data)
+        from openai import AsyncOpenAI, OpenAI
+
+        client_kwargs = {
+            "api_key": self.api_key,
+            "timeout": self.timeout,
+            "max_retries": self.max_retries or 3,
+        }
+        if self.base_url:
+            client_kwargs["base_url"] = self.base_url
+        object.__setattr__(self, "client", OpenAI(**client_kwargs))
+        object.__setattr__(self, "async_client", AsyncOpenAI(**client_kwargs))
+
+    def _messages(self, prompt: Union[str, List[Dict]]) -> List[Dict]:
+        if isinstance(prompt, str):
+            return [{"role": "user", "content": prompt}]
+        return prompt
+
+    def _to_response(self, response: Any) -> LLMResponse:
+        choice = response.choices[0] if response.choices else None
+        message = choice.message if choice else None
+        content = (message.content if message else "") or ""
+        usage = response.usage
+        tool_calls = None
+        if message and getattr(message, "tool_calls", None):
+            tool_calls = [
+                tool_call.model_dump(exclude_none=True)
+                for tool_call in message.tool_calls
+            ]
+        return LLMResponse(
+            id=getattr(response, "id", ""),
+            model_name=getattr(response, "model", self.model),
+            created=getattr(response, "created", 0) or 0,
+            content=content,
+            choices=[
+                LLMChoice(
+                    index=getattr(choice, "index", 0) if choice else 0,
+                    content=content,
+                    finish_reason=getattr(choice, "finish_reason", None) if choice else None,
+                )
+            ],
+            token_usage=TokenUsage(
+                prompt_tokens=getattr(usage, "prompt_tokens", 0) if usage else 0,
+                completion_tokens=getattr(usage, "completion_tokens", 0) if usage else 0,
+                total_tokens=getattr(usage, "total_tokens", 0) if usage else 0,
+            ),
+            metadata={},
+            tool_calls=tool_calls,
+        )
+
+    def _completion_kwargs(self, prompt: Union[str, List[Dict]], **kwargs: Any) -> Dict[str, Any]:
+        call_kwargs = {
+            "model": self.model,
+            "messages": self._messages(prompt),
+            "temperature": kwargs.pop("temperature", self.temperature),
+            "max_tokens": kwargs.pop("max_tokens", self.max_tokens),
+        }
+        tools = kwargs.pop("tools", None)
+        if tools:
+            call_kwargs["tools"] = tools
+        call_kwargs.update(kwargs)
+        return {k: v for k, v in call_kwargs.items() if v is not None}
+
+    def invoke(self, prompt: Union[str, List[Dict]], **kwargs: Any) -> LLMResponse:
+        response = self.client.chat.completions.create(
+            **self._completion_kwargs(prompt, **kwargs)
+        )
+        return self._to_response(response)
+
+    async def ainvoke(self, prompt: Union[str, List[Dict]], **kwargs: Any) -> LLMResponse:
+        response = await self.async_client.chat.completions.create(
+            **self._completion_kwargs(prompt, **kwargs)
+        )
+        return self._to_response(response)
+
+    def stream(self, prompt: Union[str, List[Dict]], **kwargs: Any) -> Generator[Union[str, Dict], None, None]:
+        response = self.client.chat.completions.create(
+            **self._completion_kwargs(prompt, stream=True, **kwargs)
+        )
+        for chunk in response:
+            delta = chunk.choices[0].delta if chunk.choices else None
+            text = getattr(delta, "content", None) if delta else None
+            if text:
+                yield text
+
+    async def astream(self, prompt: Union[str, List[Dict]], **kwargs: Any) -> AsyncGenerator[Union[str, Dict], None]:
+        response = await self.async_client.chat.completions.create(
+            **self._completion_kwargs(prompt, stream=True, **kwargs)
+        )
+        async for chunk in response:
+            delta = chunk.choices[0].delta if chunk.choices else None
+            text = getattr(delta, "content", None) if delta else None
+            if text:
+                yield text
 
 def print_info(message: str):
     if console:
@@ -130,15 +243,14 @@ def _build_llm_provider(config: Dict[str, Any]):
         print_error(f"缺少 {provider_name} 模型名称，请在 config.yaml 或环境变量中配置。")
         return None
 
-    if provider_name != 'kimi' and isinstance(model, str) and "/" not in model:
-        model = f"openai/{model}"
-
     common_kwargs = {
         "api_key": api_key,
         "base_url": base_url,
         "model": model,
         "timeout": llm_config.get('timeout'),
         "max_retries": llm_config.get('max_retries'),
+        "temperature": llm_config.get('temperature'),
+        "max_tokens": llm_config.get('max_tokens'),
     }
     common_kwargs = {k: v for k, v in common_kwargs.items() if v is not None}
 
@@ -146,8 +258,11 @@ def _build_llm_provider(config: Dict[str, Any]):
         common_kwargs.setdefault("base_url", "https://api.moonshot.cn/v1")
         return KimiProvider(**common_kwargs)
 
-    # OpenAIProvider is LiteLLM-backed and also works for OpenAI-compatible
-    # providers such as DeepSeek when base_url/model are configured.
+    if provider_name in {"openai", "cx_openai", "deepseek"}:
+        return OpenAICompatibleProvider(**common_kwargs)
+
+    if isinstance(model, str) and "/" not in model:
+        common_kwargs["model"] = f"openai/{model}"
     return OpenAIProvider(**common_kwargs)
 
 async def run_deep_search_async(topic: str, config: Dict[str, Any], workflow_mode: str = 'basic'):
