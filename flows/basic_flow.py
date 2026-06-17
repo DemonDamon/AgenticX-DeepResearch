@@ -123,7 +123,7 @@ class BasicResearchFlow(Flow[ResearchState]):
             research_context={},
             knowledge_gaps=[],
             iteration_number=1,
-            max_queries=10
+            max_queries=3
         )
         self.state.queries = queries
 
@@ -180,8 +180,14 @@ class BasicResearchFlow(Flow[ResearchState]):
             return summary
 
         if queries:
+            semaphore = asyncio.Semaphore(2)
+
+            async def summarize_with_limit(idx: int, query: SearchQuery) -> str:
+                async with semaphore:
+                    return await summarize_one(idx, query)
+
             summaries = await asyncio.gather(
-                *(summarize_one(idx, query) for idx, query in enumerate(queries, 1))
+                *(summarize_with_limit(idx, query) for idx, query in enumerate(queries, 1))
             )
             self.state.summaries.extend(summaries)
 

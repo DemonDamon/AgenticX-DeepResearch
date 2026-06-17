@@ -17,7 +17,7 @@ GOOGLE_API_BASE=
 # --- Kimi (Moonshot AI) ---
 KIMI_API_KEY=
 KIMI_API_BASE=https://api.moonshot.cn/v1
-KIMI_MODEL_NAME=kimi-k2-0711-preview
+KIMI_MODEL_NAME=moonshot-v1-32k
 
 # --- SiliconFlow Embedding ---
 SILICONFLOW_API_KEY=

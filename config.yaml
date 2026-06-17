@@ -8,7 +8,7 @@ llm:
   default_provider: "kimi"
   providers:
     kimi:
-      model: "kimi-k2-0711-preview"
+      model: "moonshot-v1-32k"
       api_key_env: "KIMI_API_KEY"
       base_url_env: "KIMI_API_BASE"
       base_url_default: "https://api.moonshot.cn/v1"

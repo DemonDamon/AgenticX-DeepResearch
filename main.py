@@ -125,7 +125,7 @@ async def run_deep_search_async(topic: str, config: Dict[str, Any], workflow_mod
     llm = KimiProvider(
         api_key=api_key,
         base_url=base_url,
-        model=llm_config.get('model', 'moonshot-v1-32k')
+        model=os.getenv('KIMI_MODEL') or os.getenv('KIMI_MODEL_NAME') or llm_config.get('model', 'moonshot-v1-32k')
     )
 
     # 初始化搜索工具
@@ -158,6 +158,10 @@ async def run_deep_search_async(topic: str, config: Dict[str, Any], workflow_mod
                 report = await flow.kickoff_async()
         else:
             report = await flow.kickoff_async()
+        if not report:
+            report = flow.state.final_report
+        if not report:
+            raise RuntimeError("研究流程没有生成报告，请检查模型权限、搜索 API Key 和上游错误日志。")
             
         print_success("\nResearch Completed!")
         print("\n" + "="*50 + "\n")

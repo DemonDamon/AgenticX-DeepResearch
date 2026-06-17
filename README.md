@@ -23,7 +23,7 @@
 ### 智能体与工具
 
 - **规划智能体**: 制定研究策略，识别知识缺口。
-- **查询生成智能体**: 根据研究目标和上下文生成默认 10 条高覆盖查询。
+- **查询生成智能体**: 根据研究目标和上下文生成多条高覆盖查询。
 - **研究总结智能体**: 并发分析搜索结果，抽取关键事实、风险和后续问题。
 - **报告写作智能体**: 输出结构化 Markdown 研究报告。
 - **搜索工具**: 支持 BochaaI、Bing、Google 与测试 Mock 场景。
@@ -94,6 +94,7 @@ cp env_template.txt .env
 | --- | --- | --- | --- |
 | `KIMI_API_KEY` | Kimi API 密钥 | 是 | - |
 | `KIMI_API_BASE` | Kimi API 地址 | 否 | `https://api.moonshot.cn/v1` |
+| `KIMI_MODEL_NAME` / `KIMI_MODEL` | Kimi 模型名称 | 否 | `moonshot-v1-32k` |
 | `BOCHAAI_API_KEY` | BochaaI 搜索密钥 | 否 | - |
 | `BING_API_KEY` | Bing Search 密钥 | 否 | - |
 | `GOOGLE_API_KEY` | Google Search 密钥 | 否 | - |

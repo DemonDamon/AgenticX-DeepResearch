@@ -16,6 +16,7 @@ from agenticx.flow.base import Flow
 from agenticx.flow.decorators import start, listen, router, or_
 from agenticx.llms.base import BaseLLMProvider
 from agenticx.planner.adaptive_planner import AdaptivePlanner, ExecutionPlan, PlanPatch
+from agenticx.flow.execution_plan import ExecutionStage, Subtask
 from agenticx.knowledge.base import BaseKnowledge
 from agenticx.brain.manager import BrainManager
 from agenticx.memory.core_memory import CoreMemory
@@ -114,6 +115,70 @@ class AdvancedResearchFlow(Flow[ResearchState]):
             except Exception as e:
                 logger.warning(f"Event emit failed [{method_name}]: {e}")
 
+    async def _generate_initial_plan(self, goal: str, context: str = "") -> ExecutionPlan:
+        if hasattr(self.planner, "generate_initial_plan"):
+            return await self.planner.generate_initial_plan(goal=goal, context=context)
+
+        plan = ExecutionPlan(
+            goal=goal,
+            planning_logic="DeepResearch fallback plan generated for current AgenticX AdaptivePlanner API.",
+            max_epochs=self.max_iterations,
+        )
+        stage_specs = [
+            (
+                "背景与现状梳理",
+                "厘清主题背景、关键概念、最新动态和核心利益相关方。",
+                ["主题背景", "最新动态", "关键参与方"],
+            ),
+            (
+                "影响面分析",
+                "分析经济、产业、资本市场、技术生态和潜在风险影响。",
+                ["经济影响", "产业影响", "资本市场影响", "技术生态影响"],
+            ),
+            (
+                "综合判断与报告",
+                "交叉验证主要发现，形成结论、风险提示和后续观察点。",
+                ["关键结论", "风险与不确定性", "后续观察点"],
+            ),
+        ]
+        for stage_name, description, queries in stage_specs:
+            stage = ExecutionStage(name=stage_name, description=description)
+            for query in queries:
+                stage.add_subtask(Subtask(name=query, query=f"{goal} {query}"))
+            plan.add_stage(stage)
+        return plan
+
+    async def _propose_plan_patch(self, observation: str) -> Optional[PlanPatch]:
+        if hasattr(self.planner, "propose_plan_patch"):
+            return await self.planner.propose_plan_patch(
+                plan=self.execution_plan,
+                observation=observation,
+            )
+        # Current AgenticX AdaptivePlanner.replan expects a different LLM protocol
+        # (`generate`) than KimiProvider exposes, so skip optional replanning here.
+        return None
+
+    def _patch_has_changes(self, patch: Optional[PlanPatch]) -> bool:
+        if not patch:
+            return False
+        if hasattr(patch, "is_empty"):
+            return not patch.is_empty
+        return any(
+            getattr(patch, attr, None)
+            for attr in ("operations", "added_stages", "added_subtasks", "deleted_subtasks")
+        )
+
+    def _patch_change_count(self, patch: PlanPatch) -> int:
+        if hasattr(patch, "operations"):
+            return len(patch.operations or [])
+        return len(getattr(patch, "added_subtasks", []) or []) + len(getattr(patch, "added_stages", []) or [])
+
+    def _apply_plan_patch(self, patch: PlanPatch) -> None:
+        if hasattr(self.execution_plan, "apply_patch"):
+            self.execution_plan.apply_patch(patch)
+        elif hasattr(self.planner, "apply_patch"):
+            self.execution_plan = self.planner.apply_patch(self.execution_plan, patch)
+
     # ------------------------------------------------------------------
     # Flow 步骤
     # ------------------------------------------------------------------
@@ -156,7 +221,7 @@ class AdvancedResearchFlow(Flow[ResearchState]):
 
         # 生成初始计划
         logger.info("Generating initial execution plan...")
-        self.execution_plan = await self.planner.generate_initial_plan(
+        self.execution_plan = await self._generate_initial_plan(
             goal=f"对主题 '{self.state.topic}' 进行深度调研。目标: {self.state.objective or '全面了解'}",
             context=background_context
         )
@@ -196,7 +261,7 @@ class AdvancedResearchFlow(Flow[ResearchState]):
             research_context={"subtask_context": subtask_context},
             knowledge_gaps=[],
             iteration_number=it_num,
-            max_queries=10
+            max_queries=3
         )
         self.state.queries = queries
 
@@ -259,8 +324,14 @@ class AdvancedResearchFlow(Flow[ResearchState]):
 
         round_summaries = []
         if queries:
+            semaphore = asyncio.Semaphore(2)
+
+            async def summarize_with_limit(idx: int, query: SearchQuery) -> str:
+                async with semaphore:
+                    return await summarize_one(idx, query)
+
             round_summaries = await asyncio.gather(
-                *(summarize_one(idx, query) for idx, query in enumerate(queries, 1))
+                *(summarize_with_limit(idx, query) for idx, query in enumerate(queries, 1))
             )
 
         iteration.analysis_summary = "\n\n".join(round_summaries)
@@ -310,17 +381,16 @@ class AdvancedResearchFlow(Flow[ResearchState]):
             )
 
         # 调用 AdaptivePlanner 提出计划修补方案
-        patch: PlanPatch = await self.planner.propose_plan_patch(
-            plan=self.execution_plan,
+        patch: Optional[PlanPatch] = await self._propose_plan_patch(
             observation=f"当前迭代发现: {reflection.get('reflection_summary', '')}\n知识空白: {reflection.get('identified_gaps', [])}"
         )
 
-        if patch and (patch.added_stages or patch.added_subtasks or patch.deleted_subtasks):
+        if self._patch_has_changes(patch):
             logger.info("Applying plan patch...")
-            self.execution_plan.apply_patch(patch)
+            self._apply_plan_patch(patch)
 
             # 事件：计划修补
-            added_count = len(patch.added_subtasks or []) + len(patch.added_stages or [])
+            added_count = self._patch_change_count(patch)
             await self._emit("emit_plan_patched",
                              f"发现新线索，动态扩展 {added_count} 个研究子任务",
                              added_count)
