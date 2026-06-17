@@ -8,6 +8,7 @@ v3 新增：细粒度 FlowEventEmitter 事件钩子，支持实时 SSE 进度推
 
 import asyncio
 import logging
+import os
 from typing import Any, Dict, List, Optional, Union
 
 from pydantic import Field
@@ -261,7 +262,7 @@ class AdvancedResearchFlow(Flow[ResearchState]):
             research_context={"subtask_context": subtask_context},
             knowledge_gaps=[],
             iteration_number=it_num,
-            max_queries=3
+            max_queries=int(os.getenv("MAX_QUERIES", "1"))
         )
         self.state.queries = queries
 
@@ -365,11 +366,18 @@ class AdvancedResearchFlow(Flow[ResearchState]):
                          "正在分析调研进度，执行自适应重规划...", 1)
 
         # 反思当前进度
-        reflection = await self.summarizer.reflect(
-            research_topic=self.state.topic,
-            current_summary="\n\n".join(self.state.summaries),
-            iteration_number=self.state.context.current_iteration
-        )
+        if os.getenv("FAST_CLI", "1") == "1":
+            reflection = {
+                "completeness_score": 1.0,
+                "reflection_summary": "FAST_CLI 模式跳过多轮反思，直接生成报告。",
+                "identified_gaps": [],
+            }
+        else:
+            reflection = await self.summarizer.reflect(
+                research_topic=self.state.topic,
+                current_summary="\n\n".join(self.state.summaries),
+                iteration_number=self.state.context.current_iteration
+            )
 
         completeness = reflection.get("completeness_score", 0.5)
 

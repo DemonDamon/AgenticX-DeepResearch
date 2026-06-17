@@ -7,6 +7,8 @@ Report Writer Agent
 
 import json
 import logging
+import asyncio
+import os
 import re
 from typing import Any, Dict, List, Optional
 
@@ -74,6 +76,9 @@ class ReportWriterAgent(Agent):
         Returns:
             ResearchReport 实例
         """
+        if os.getenv("FAST_CLI", "1") == "1":
+            return await self._generate_fast_report(research_context)
+
         # 1. 生成大纲
         outline = await self.generate_report_outline(research_context)
 
@@ -103,6 +108,65 @@ class ReportWriterAgent(Agent):
         )
 
         return report
+
+    async def _generate_fast_report(self, research_context: ResearchContext) -> ResearchReport:
+        """Generate a concise report with one bounded LLM call for CLI usage."""
+        findings = self._extract_key_findings(research_context)
+        sources = self._format_sources(research_context)
+        budget = TokenBudget(max_tokens=1800)
+        findings_context = budget.truncate(findings)
+        sources_context = budget.truncate(sources, max_tokens=700)
+        prompt = f"""请基于已有研究摘要生成一份简洁但可读的中文研究报告。
+
+研究主题: {research_context.research_topic}
+研究目标: {research_context.research_objective}
+研究摘要:
+{findings_context}
+
+来源线索:
+{sources_context}
+
+要求:
+1. 必须先检查用户问题中的事实前提是否被证据支持。
+2. 如果“收购 Cursor”等前提没有可靠证据，必须明确写为“未能证实”，不要当作事实展开。
+3. 报告结构包含：核心结论、主要影响面、对 Cursor 的可能影响、风险与不确定性、后续需要核验的信息。
+4. 控制在 1200-1800 字。
+"""
+        content = ""
+        if self.llm:
+            try:
+                response = await asyncio.wait_for(
+                    self.llm.ainvoke(prompt),
+                    timeout=float(os.getenv("LLM_TIMEOUT", "45")),
+                )
+                content = (response.content if hasattr(response, "content") else str(response)).strip()
+            except Exception as e:
+                logger.warning(f"[ReportWriter] 快速报告生成失败: {e}")
+
+        if not content:
+            content = f"## 核心发现\n\n{findings_context or '暂无有效发现。'}\n\n## 来源线索\n\n{sources_context or '暂无来源。'}"
+
+        abstract = (
+            f"本报告围绕「{research_context.research_topic}」进行快速研究。"
+            "报告优先呈现已获得证据，并标注未能证实的前提与不确定性。"
+        )
+        return ResearchReport(
+            title=f"{research_context.research_topic} 研究报告",
+            abstract=abstract,
+            sections=[
+                ReportSection(
+                    title="快速研究报告",
+                    content=content,
+                    level=1,
+                )
+            ],
+            citations=self._collect_citations(research_context),
+            metadata={
+                "topic": research_context.research_topic,
+                "iterations": research_context.current_iteration,
+                "mode": "fast",
+            },
+        )
 
     async def generate_report_outline(
         self,

@@ -8,6 +8,7 @@ Query Generator Agent (v2 - ReActAgent Based)
 
 import json
 import logging
+import os
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set
 
@@ -274,8 +275,12 @@ class QueryGeneratorAgent:
         language = self._detect_language(research_topic)
         strategy = self._determine_strategy(iteration_number, knowledge_gaps)
 
-        # 使用 ReActAgent 生成查询（如果可用）
-        if self._react_agent is not None:
+        # CLI 默认走直接模板生成，避免 ReAct 多轮调用导致启动慢或静默等待。
+        if os.getenv("FAST_CLI", "1") == "1":
+            queries = self._generate_with_tool_directly(
+                research_topic, knowledge_gaps, strategy, max_queries, language
+            )
+        elif self._react_agent is not None:
             queries = await self._generate_with_react_agent(
                 research_topic, research_context, knowledge_gaps,
                 iteration_number, strategy, max_queries, language

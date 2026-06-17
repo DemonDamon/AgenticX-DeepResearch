@@ -253,7 +253,7 @@ def _build_llm_provider(config: Dict[str, Any]):
         "api_key": api_key,
         "base_url": base_url,
         "model": model,
-        "timeout": llm_config.get('timeout') or _env_float("LLM_TIMEOUT", 90.0),
+        "timeout": llm_config.get('timeout') or _env_float("LLM_TIMEOUT", 45.0),
         "max_retries": llm_config.get('max_retries'),
         "temperature": llm_config.get('temperature'),
         "max_tokens": llm_config.get('max_tokens'),
@@ -321,7 +321,7 @@ async def run_deep_search_async(topic: str, config: Dict[str, Any], workflow_mod
         flow = BasicResearchFlow(llm_provider=llm, search_tools=tools, state=state)
 
     try:
-        run_timeout = _env_float("RUN_TIMEOUT", 240.0)
+        run_timeout = _env_float("RUN_TIMEOUT", 120.0)
         report = await _run_flow_with_heartbeat(flow, topic, run_timeout)
         if not report:
             report = flow.state.final_report
@@ -341,10 +341,15 @@ async def run_deep_search_async(topic: str, config: Dict[str, Any], workflow_mod
             f.write(report)
         print_info(f"Report saved to: {filename}")
 
+    except TimeoutError as e:
+        print_error(str(e))
+    except KeyboardInterrupt:
+        print_error("用户已取消研究任务。")
     except Exception as e:
         print_error(f"Research failed: {e}")
-        import traceback
-        traceback.print_exc()
+        if os.getenv("DEBUG_TRACEBACK", "0") == "1":
+            import traceback
+            traceback.print_exc()
 
 def main():
     parser = argparse.ArgumentParser(description="AgenticX Deep Research v2")

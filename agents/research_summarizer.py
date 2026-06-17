@@ -8,6 +8,8 @@ Research Summarizer Agent (v2 - ReActAgent Based)
 
 import json
 import logging
+import asyncio
+import os
 import re
 from typing import Any, AsyncIterator, Dict, List, Optional, Sequence
 
@@ -122,6 +124,9 @@ class ResearchSummarizerAgent:
         Returns:
             总结文本
         """
+        if os.getenv("FAST_CLI", "1") == "1":
+            return await self._direct_search_and_summarize(query, research_topic)
+
         if self._search_agent is None:
             return f"[无 LLM] 搜索查询: {query}"
 
@@ -136,6 +141,67 @@ class ResearchSummarizerAgent:
         except Exception as e:
             logger.warning(f"[ResearchSummarizer] 搜索总结失败: {e}")
             return f"搜索总结失败: {str(e)}"
+
+    async def _direct_search_and_summarize(self, query: str, research_topic: str) -> str:
+        """Fast path: bounded direct search + one LLM summarization call."""
+        timeout = float(os.getenv("SEARCH_TIMEOUT", "8"))
+        max_results = int(os.getenv("SEARCH_RESULTS", "3"))
+        raw_results: List[Dict[str, Any]] = []
+
+        for tool in self._search_tools[:1]:
+            try:
+                result = await asyncio.wait_for(
+                    tool._arun(query=query, count=max_results, max_results=max_results),
+                    timeout=timeout + 1,
+                )
+                if isinstance(result, dict):
+                    items = result.get("results", [])
+                else:
+                    items = result or []
+                for item in items[:max_results]:
+                    if hasattr(item, "model_dump"):
+                        item = item.model_dump()
+                    raw_results.append(dict(item))
+            except Exception as e:
+                logger.warning(f"[ResearchSummarizer] 直接搜索失败: {e}")
+            break
+
+        result_lines = []
+        for i, item in enumerate(raw_results[:max_results], 1):
+            title = item.get("title") or item.get("name") or "无标题"
+            url = item.get("url") or item.get("link") or ""
+            snippet = item.get("snippet") or item.get("description") or item.get("summary") or ""
+            result_lines.append(f"[{i}] {title}\nURL: {url}\n摘要: {snippet[:500]}")
+
+        evidence = "\n\n".join(result_lines) or "搜索工具未返回有效结果。请基于常识谨慎分析，并明确说明证据不足。"
+        if not raw_results:
+            return f"查询「{query}」未获得有效搜索结果。证据不足，不能确认用户问题中的事实前提。"
+
+        prompt = f"""请基于以下搜索证据，围绕研究主题生成一段简洁、可用于报告的研究摘要。
+
+研究主题: {research_topic}
+搜索查询: {query}
+搜索证据:
+{evidence}
+
+要求:
+1. 使用中文。
+2. 先判断证据是否支持用户前提；如果前提缺乏证据，必须明确指出。
+3. 输出 3-6 条要点，每条尽量包含事实、影响和不确定性。
+4. 不要编造来源。
+"""
+        if not self.llm:
+            return evidence
+        try:
+            response = await asyncio.wait_for(
+                self.llm.ainvoke(prompt),
+                timeout=float(os.getenv("LLM_TIMEOUT", "45")),
+            )
+            text = response.content if hasattr(response, "content") else str(response)
+            return text.strip()
+        except Exception as e:
+            logger.warning(f"[ResearchSummarizer] 直接总结失败: {e}")
+            return f"查询「{query}」的搜索证据不足或总结失败: {e}\n\n{evidence}"
 
     async def search_and_summarize_stream(
         self,

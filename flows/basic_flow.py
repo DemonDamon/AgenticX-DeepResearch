@@ -7,6 +7,7 @@ v3 新增：细粒度 FlowEventEmitter 事件钩子，支持实时 SSE 进度推
 
 import asyncio
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, ConfigDict
@@ -123,7 +124,7 @@ class BasicResearchFlow(Flow[ResearchState]):
             research_context={},
             knowledge_gaps=[],
             iteration_number=1,
-            max_queries=3
+            max_queries=int(os.getenv("MAX_QUERIES", "1"))
         )
         self.state.queries = queries
 
