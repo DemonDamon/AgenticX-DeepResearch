@@ -219,6 +219,12 @@ def _env_or_config(config_value: Any, env_name: Optional[str] = None) -> Optiona
         return config_value
     return None
 
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return default
+
 def _build_llm_provider(config: Dict[str, Any]):
     provider_name = _get_provider_name(config)
     llm_config = _get_provider_config(config)
@@ -247,7 +253,7 @@ def _build_llm_provider(config: Dict[str, Any]):
         "api_key": api_key,
         "base_url": base_url,
         "model": model,
-        "timeout": llm_config.get('timeout'),
+        "timeout": llm_config.get('timeout') or _env_float("LLM_TIMEOUT", 90.0),
         "max_retries": llm_config.get('max_retries'),
         "temperature": llm_config.get('temperature'),
         "max_tokens": llm_config.get('max_tokens'),
@@ -264,6 +270,18 @@ def _build_llm_provider(config: Dict[str, Any]):
     if isinstance(model, str) and "/" not in model:
         common_kwargs["model"] = f"openai/{model}"
     return OpenAIProvider(**common_kwargs)
+
+async def _run_flow_with_heartbeat(flow, topic: str, timeout: float):
+    task = asyncio.create_task(flow.kickoff_async())
+    elapsed = 0
+    while not task.done():
+        await asyncio.sleep(10)
+        elapsed += 10
+        print_info(f"仍在运行：{topic[:40]}... 已等待 {elapsed}s")
+        if elapsed >= timeout:
+            task.cancel()
+            raise TimeoutError(f"研究执行超过 {int(timeout)} 秒，已取消。可通过 RUN_TIMEOUT 调整。")
+    return await task
 
 async def run_deep_search_async(topic: str, config: Dict[str, Any], workflow_mode: str = 'basic'):
     """异步运行深度搜索"""
@@ -303,11 +321,8 @@ async def run_deep_search_async(topic: str, config: Dict[str, Any], workflow_mod
         flow = BasicResearchFlow(llm_provider=llm, search_tools=tools, state=state)
 
     try:
-        if console:
-            with console.status(f"[bold green]Researching {topic}...", spinner="dots"):
-                report = await flow.kickoff_async()
-        else:
-            report = await flow.kickoff_async()
+        run_timeout = _env_float("RUN_TIMEOUT", 240.0)
+        report = await _run_flow_with_heartbeat(flow, topic, run_timeout)
         if not report:
             report = flow.state.final_report
         if not report:

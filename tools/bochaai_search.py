@@ -104,7 +104,7 @@ class BochaaIWebSearchTool(BaseSearchTool):
             name="bochaai_web_search_tool",
             description="博查AI Web Search API 搜索工具，用于搜索网页信息，支持中文优化和AI摘要。",
             engine_name="bochaai",
-            timeout=30.0,
+            timeout=float(os.getenv("SEARCH_TIMEOUT", "8")),
         )
         self.api_key = api_key or os.getenv("BOCHAAI_API_KEY", "")
         self.endpoint = endpoint or "https://api.bochaai.com/v1/web-search"
@@ -176,7 +176,7 @@ class BochaaIWebSearchTool(BaseSearchTool):
                 }
             )
 
-            with urllib.request.urlopen(req, timeout=30) as response:
+            with urllib.request.urlopen(req, timeout=float(os.getenv("SEARCH_TIMEOUT", "8"))) as response:
                 raw_data = response.read().decode("utf-8")
                 result = json.loads(raw_data)
 
@@ -268,7 +268,7 @@ class BochaaIWebSearchTool(BaseSearchTool):
                     self.endpoint,
                     headers=headers,
                     json=payload,
-                    timeout=aiohttp.ClientTimeout(total=30.0)
+                    timeout=aiohttp.ClientTimeout(total=float(os.getenv("SEARCH_TIMEOUT", "8")))
                 ) as response:
                     response.raise_for_status()
                     data = await response.json()
