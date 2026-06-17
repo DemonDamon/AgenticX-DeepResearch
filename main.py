@@ -81,6 +81,26 @@ def select_workflow_mode() -> str:
         if choice == '2': return 'advanced'
         print("Invalid choice, please select 1 or 2.")
 
+def _get_provider_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    llm_config = config.get('llm', {})
+    provider_name = llm_config.get('default_provider', 'kimi')
+    providers = llm_config.get('providers', {})
+    provider_config = providers.get(provider_name, {})
+    return provider_config or llm_config
+
+def _get_search_config(config: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
+    search_config = config.get('search', {})
+    engine = os.getenv('SEARCH_ENGINE') or search_config.get('default_engine') or search_config.get('engine', 'bochaai')
+    engines = search_config.get('engines', {})
+    return engine, engines.get(engine, {})
+
+def _env_or_config(config_value: Any, env_name: Optional[str] = None) -> Optional[str]:
+    if env_name and os.getenv(env_name):
+        return os.getenv(env_name)
+    if isinstance(config_value, str) and config_value:
+        return config_value
+    return None
+
 async def run_deep_search_async(topic: str, config: Dict[str, Any], workflow_mode: str = 'basic'):
     """异步运行深度搜索"""
     topic = clean_input_text(topic)
@@ -89,22 +109,37 @@ async def run_deep_search_async(topic: str, config: Dict[str, Any], workflow_mod
         return
 
     # 初始化 LLM
-    llm_config = config.get('llm', {})
+    llm_config = _get_provider_config(config)
+    api_key = _env_or_config(llm_config.get('api_key'), llm_config.get('api_key_env') or 'KIMI_API_KEY')
+    base_url = (
+        _env_or_config(llm_config.get('base_url'), llm_config.get('base_url_env') or 'KIMI_API_BASE')
+        or llm_config.get('base_url_default')
+        or 'https://api.moonshot.cn/v1'
+    )
+    if not api_key:
+        print_error("缺少 KIMI_API_KEY，无法初始化 KimiProvider。")
+        print_info("请先执行：cp env_template.txt .env，然后在 .env 中填写 KIMI_API_KEY。")
+        print_info("如果只想临时运行，也可以执行：export KIMI_API_KEY='你的 key'")
+        return
+
     llm = KimiProvider(
-        api_key=os.getenv('KIMI_API_KEY', llm_config.get('api_key')),
-        base_url=os.getenv('KIMI_API_BASE', llm_config.get('base_url')),
+        api_key=api_key,
+        base_url=base_url,
         model=llm_config.get('model', 'moonshot-v1-32k')
     )
 
     # 初始化搜索工具
-    search_engine = os.getenv('SEARCH_ENGINE', config.get('search', {}).get('engine', 'bochaai'))
+    search_engine, search_config = _get_search_config(config)
     tools = []
     if search_engine == 'bochaai':
-        tools.append(BochaaISearchTool(api_key=os.getenv('BOCHAAI_API_KEY')))
+        api_key_env = search_config.get('api_key_env', 'BOCHAAI_API_KEY')
+        tools.append(BochaaISearchTool(api_key=os.getenv(api_key_env)))
     elif search_engine == 'bing':
-        tools.append(BingSearchTool(api_key=os.getenv('BING_API_KEY')))
+        api_key_env = search_config.get('api_key_env', 'BING_SUBSCRIPTION_KEY')
+        tools.append(BingSearchTool(api_key=os.getenv(api_key_env) or os.getenv('BING_API_KEY')))
     else:
-        tools.append(GoogleSearchTool(api_key=os.getenv('GOOGLE_API_KEY')))
+        api_key_env = search_config.get('api_key_env', 'GOOGLE_API_KEY')
+        tools.append(GoogleSearchTool(api_key=os.getenv(api_key_env)))
 
     # 初始化 Flow 状态
     state = ResearchState(topic=topic, objective=f"对 {topic} 进行深度调研")
