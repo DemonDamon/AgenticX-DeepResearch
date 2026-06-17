@@ -28,6 +28,7 @@ except ImportError:
     Console = Panel = Text = Table = Progress = SpinnerColumn = TextColumn = box = None
 
 # 导入核心组件
+from agenticx.llms import OpenAIProvider
 from agenticx.llms.kimi_provider import KimiProvider
 from tools import BochaaISearchTool, BingSearchTool, GoogleSearchTool
 from flows import BasicResearchFlow, AdvancedResearchFlow, ResearchState
@@ -81,9 +82,13 @@ def select_workflow_mode() -> str:
         if choice == '2': return 'advanced'
         print("Invalid choice, please select 1 or 2.")
 
+def _get_provider_name(config: Dict[str, Any]) -> str:
+    llm_config = config.get('llm', {})
+    return os.getenv('LLM_PROVIDER') or llm_config.get('default_provider', 'kimi')
+
 def _get_provider_config(config: Dict[str, Any]) -> Dict[str, Any]:
     llm_config = config.get('llm', {})
-    provider_name = llm_config.get('default_provider', 'kimi')
+    provider_name = _get_provider_name(config)
     providers = llm_config.get('providers', {})
     provider_config = providers.get(provider_name, {})
     return provider_config or llm_config
@@ -101,6 +106,50 @@ def _env_or_config(config_value: Any, env_name: Optional[str] = None) -> Optiona
         return config_value
     return None
 
+def _build_llm_provider(config: Dict[str, Any]):
+    provider_name = _get_provider_name(config)
+    llm_config = _get_provider_config(config)
+    api_key_env = llm_config.get('api_key_env') or f"{provider_name.upper()}_API_KEY"
+    base_url_env = llm_config.get('base_url_env') or f"{provider_name.upper()}_API_BASE"
+    api_key = _env_or_config(llm_config.get('api_key'), api_key_env)
+    base_url = (
+        _env_or_config(llm_config.get('base_url'), base_url_env)
+        or llm_config.get('base_url_default')
+    )
+    model_env = (
+        os.getenv(f"{provider_name.upper()}_MODEL")
+        or os.getenv(f"{provider_name.upper()}_MODEL_NAME")
+    )
+    model = model_env or llm_config.get('model')
+
+    if not api_key:
+        print_error(f"缺少 {api_key_env}，无法初始化 {provider_name} provider。")
+        print_info("请检查 .env 或当前 shell 环境变量。")
+        return None
+    if not model:
+        print_error(f"缺少 {provider_name} 模型名称，请在 config.yaml 或环境变量中配置。")
+        return None
+
+    if provider_name != 'kimi' and isinstance(model, str) and "/" not in model:
+        model = f"openai/{model}"
+
+    common_kwargs = {
+        "api_key": api_key,
+        "base_url": base_url,
+        "model": model,
+        "timeout": llm_config.get('timeout'),
+        "max_retries": llm_config.get('max_retries'),
+    }
+    common_kwargs = {k: v for k, v in common_kwargs.items() if v is not None}
+
+    if provider_name == 'kimi':
+        common_kwargs.setdefault("base_url", "https://api.moonshot.cn/v1")
+        return KimiProvider(**common_kwargs)
+
+    # OpenAIProvider is LiteLLM-backed and also works for OpenAI-compatible
+    # providers such as DeepSeek when base_url/model are configured.
+    return OpenAIProvider(**common_kwargs)
+
 async def run_deep_search_async(topic: str, config: Dict[str, Any], workflow_mode: str = 'basic'):
     """异步运行深度搜索"""
     topic = clean_input_text(topic)
@@ -109,24 +158,10 @@ async def run_deep_search_async(topic: str, config: Dict[str, Any], workflow_mod
         return
 
     # 初始化 LLM
-    llm_config = _get_provider_config(config)
-    api_key = _env_or_config(llm_config.get('api_key'), llm_config.get('api_key_env') or 'KIMI_API_KEY')
-    base_url = (
-        _env_or_config(llm_config.get('base_url'), llm_config.get('base_url_env') or 'KIMI_API_BASE')
-        or llm_config.get('base_url_default')
-        or 'https://api.moonshot.cn/v1'
-    )
-    if not api_key:
-        print_error("缺少 KIMI_API_KEY，无法初始化 KimiProvider。")
-        print_info("请先执行：cp env_template.txt .env，然后在 .env 中填写 KIMI_API_KEY。")
-        print_info("如果只想临时运行，也可以执行：export KIMI_API_KEY='你的 key'")
+    llm = _build_llm_provider(config)
+    if llm is None:
         return
-
-    llm = KimiProvider(
-        api_key=api_key,
-        base_url=base_url,
-        model=os.getenv('KIMI_MODEL') or os.getenv('KIMI_MODEL_NAME') or llm_config.get('model', 'moonshot-v1-32k')
-    )
+    print_info(f"Using LLM provider: {_get_provider_name(config)} ({llm.model})")
 
     # 初始化搜索工具
     search_engine, search_config = _get_search_config(config)
