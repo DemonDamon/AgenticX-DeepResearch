@@ -5,6 +5,7 @@ Basic Research Flow (v3 - with FlowEventEmitter)
 v3 新增：细粒度 FlowEventEmitter 事件钩子，支持实时 SSE 进度推送。
 """
 
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -108,7 +109,7 @@ class BasicResearchFlow(Flow[ResearchState]):
         # 事件：任务开始
         await self._emit("emit_task_started", self.state.topic, "basic")
         # 事件：阶段开始
-        await self._emit("emit_phase_started", "generate_queries", "正在分析主题，生成搜索查询...", 3)
+        await self._emit("emit_phase_started", "generate_queries", "正在分析主题，生成搜索查询...", 10)
 
         # 记录记忆
         if self.state.memory:
@@ -122,7 +123,7 @@ class BasicResearchFlow(Flow[ResearchState]):
             research_context={},
             knowledge_gaps=[],
             iteration_number=1,
-            max_queries=3
+            max_queries=10
         )
         self.state.queries = queries
 
@@ -148,7 +149,7 @@ class BasicResearchFlow(Flow[ResearchState]):
 
         iteration = ResearchIteration(iteration_id=1, queries=queries)
 
-        for idx, query in enumerate(queries, 1):
+        async def summarize_one(idx: int, query: SearchQuery) -> str:
             logger.info(f"Executing search for: {query.query}")
 
             # 事件：单次搜索开始
@@ -158,7 +159,6 @@ class BasicResearchFlow(Flow[ResearchState]):
                 query=query.query,
                 research_topic=self.state.topic
             )
-            self.state.summaries.append(summary)
 
             # 事件：单次搜索完成
             await self._emit("emit_search_completed", query.query, 1)
@@ -177,6 +177,13 @@ class BasicResearchFlow(Flow[ResearchState]):
                     }
                 )
                 await self._emit("emit_knowledge_indexed", idx)
+            return summary
+
+        if queries:
+            summaries = await asyncio.gather(
+                *(summarize_one(idx, query) for idx, query in enumerate(queries, 1))
+            )
+            self.state.summaries.extend(summaries)
 
         iteration.analysis_summary = "\n\n".join(self.state.summaries)
         self.state.context.add_iteration(iteration)

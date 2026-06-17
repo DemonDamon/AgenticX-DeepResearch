@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 from agenticx.core.agent import Agent, AgentContext, AgentResult
 from agenticx.llms.base import BaseLLMProvider
 
+from token_budget import TokenBudget
 from models import (
     ResearchContext,
     ResearchReport,
@@ -219,6 +220,9 @@ Output the abstract text directly.
         section_focus = section_info.get("focus", "")
         findings = self._extract_key_findings(research_context)
         sources = self._format_sources(research_context)
+        section_budget = TokenBudget(max_tokens=900)
+        findings_context = section_budget.truncate(findings)
+        sources_context = section_budget.truncate(sources, max_tokens=450)
 
         if language == "zh":
             prompt = f"""请撰写研究报告的以下章节。
@@ -226,8 +230,8 @@ Output the abstract text directly.
 研究主题: {research_context.research_topic}
 章节标题: {section_title}
 章节重点: {section_focus}
-相关发现: {findings[:2000]}
-信息来源: {sources[:1000]}
+相关发现: {findings_context}
+信息来源: {sources_context}
 
 要求：
 1. 内容详实，有据可查
@@ -243,8 +247,8 @@ Output the abstract text directly.
 Topic: {research_context.research_topic}
 Section: {section_title}
 Focus: {section_focus}
-Findings: {findings[:2000]}
-Sources: {sources[:1000]}
+Findings: {findings_context}
+Sources: {sources_context}
 
 Requirements:
 1. Well-supported content

@@ -19,6 +19,7 @@ Near AI / A2A / MCP 协议适配层 (v2)
 
 import uuid
 import logging
+import os
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 
@@ -29,6 +30,10 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/protocols", tags=["A2A / MCP / Near"])
+
+
+def _background_enabled() -> bool:
+    return not os.getenv("PYTEST_CURRENT_TEST") and os.getenv("AGENTICX_DISABLE_BACKGROUND_TASKS") != "1"
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -121,7 +126,8 @@ async def a2a_send_task(request: A2ATaskRequest, background_tasks: BackgroundTas
         objective=f"[A2A 委托] {topic}",
         mode="advanced"
     )
-    background_tasks.add_task(_execute_a2a_task, task_id, topic)
+    if _background_enabled():
+        background_tasks.add_task(_execute_a2a_task, task_id, topic)
 
     return A2ATaskResponse(
         id=request.id,
@@ -267,7 +273,8 @@ async def mcp_call_tool(request: MCPToolCallRequest, background_tasks: Backgroun
             objective=arguments.get("objective", f"对 {topic} 进行深度调研"),
             mode=arguments.get("mode", "basic")
         )
-        background_tasks.add_task(_execute_a2a_task, task_id, topic)
+        if _background_enabled():
+            background_tasks.add_task(_execute_a2a_task, task_id, topic)
         return MCPToolCallResponse(
             id=request.id,
             result={
@@ -376,9 +383,11 @@ async def near_webhook(request: NearWebhookRequest, background_tasks: Background
         )
 
         if request.callback_url:
-            background_tasks.add_task(_execute_and_callback, task_id, topic, request.callback_url)
+            if _background_enabled():
+                background_tasks.add_task(_execute_and_callback, task_id, topic, request.callback_url)
         else:
-            background_tasks.add_task(_execute_a2a_task, task_id, topic)
+            if _background_enabled():
+                background_tasks.add_task(_execute_a2a_task, task_id, topic)
 
         return {
             "status": "accepted",

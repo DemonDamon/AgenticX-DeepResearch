@@ -9,6 +9,7 @@ from pydantic import Field
 from agenticx.core.task import Task
 from agenticx.core.message import Message
 from models import SearchResult, ResearchContext
+from token_budget import TokenBudget
 
 
 class ContentAnalysisTask(Task):
@@ -105,6 +106,7 @@ class ContentAnalysisTask(Task):
         
         # Detect language based on research topic
         detected_language = self._detect_language(research_topic)
+        content_context = TokenBudget(max_tokens=500).truncate(result.content or "")
         
         # Use LLM for deep analysis with dynamic language
         if detected_language == "zh":
@@ -113,7 +115,7 @@ class ContentAnalysisTask(Task):
 
 标题: {result.title}
 摘要: {result.snippet}
-内容: {result.content[:1000] if result.content else '无详细内容'}
+内容: {content_context if content_context else '无详细内容'}
 
 请从以下维度进行分析：
 1. 内容质量（1-10分）
@@ -129,7 +131,7 @@ Please analyze the relevance and quality of the following search result to the r
 
 Title: {result.title}
 Summary: {result.snippet}
-Content: {result.content[:1000] if result.content else 'No detailed content'}
+Content: {content_context if content_context else 'No detailed content'}
 
 Please analyze from the following dimensions:
 1. Content quality (1-10 points)

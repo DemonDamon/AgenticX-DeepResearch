@@ -7,6 +7,7 @@ agenticx>=0.1.0
 
 # 数据模型
 pydantic>=2.0.0
+numpy>=1.26.0
 
 # LLM 相关
 openai>=1.0.0
@@ -14,6 +15,12 @@ httpx>=0.25.0
 
 # 异步支持
 aiohttp>=3.9.0
+
+# API 服务
+fastapi>=0.110.0
+uvicorn>=0.24.0
+sse-starlette>=2.0.0
+sqlalchemy>=2.0.0
 
 # 配置管理
 pyyaml>=6.0.0

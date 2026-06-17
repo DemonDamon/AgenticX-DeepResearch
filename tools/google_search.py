@@ -13,7 +13,10 @@ import urllib.error
 import urllib.parse
 from typing import Any, Dict, List, Optional
 
-from .base_search import BaseSearchTool
+try:
+    from .base_search import BaseSearchTool
+except ImportError:  # Support legacy tests that import this module directly.
+    from base_search import BaseSearchTool
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +38,8 @@ class GoogleSearchTool(BaseSearchTool):
         **kwargs
     ):
         super().__init__(
-            name="google_web_search",
-            description="使用 Google 搜索引擎进行网络搜索。输入搜索查询，返回相关网页结果。",
+            name="google_search_tool",
+            description="Google Search API 搜索工具。输入搜索查询，返回相关网页结果。",
             engine_name="google",
             timeout=30.0,
             **kwargs
@@ -190,8 +193,8 @@ class MockGoogleSearchTool(BaseSearchTool):
 
     def __init__(self, **kwargs):
         super().__init__(
-            name="mock_google_web_search",
-            description="模拟 Google 搜索工具（测试用）",
+            name="google_search_tool",
+            description="Mock Google Search API 搜索工具（测试用）",
             engine_name="google_mock",
             timeout=5.0,
             **kwargs
@@ -218,9 +221,14 @@ class MockGoogleSearchTool(BaseSearchTool):
             mock_results.append({
                 "title": f"[MockGoogle] {query} - {label}",
                 "url": f"https://example.com/google/{category}/{query.replace(' ', '-')}-{i+1}",
+                "link": f"https://example.com/google/{category}/{query.replace(' ', '-')}-{i+1}",
                 "snippet": f"Google 模拟结果: 关于 '{query}' 的{label}内容，提供深入的分析视角。",
                 "display_url": f"example.com/google/{category}/...",
             })
 
         logger.info(f"[MockGoogle] 模拟搜索 '{query}' 返回 {len(mock_results)} 条结果")
         return mock_results
+
+    def _run(self, query: str = "", max_results: int = 10, **kwargs):
+        """Legacy tests expect the Google mock to return a raw list."""
+        return self._execute_search(query=query, max_results=max_results)

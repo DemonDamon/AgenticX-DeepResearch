@@ -15,9 +15,65 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from .base_search import BaseSearchTool, SearchResultItem
+try:
+    from .base_search import BaseSearchTool, SearchResultItem, SearchResponse as BaseSearchResponse
+except ImportError:  # Support legacy tests that import this module directly.
+    from base_search import BaseSearchTool, SearchResultItem, SearchResponse as BaseSearchResponse
 
 logger = logging.getLogger(__name__)
+
+
+class SearchInput(BaseModel):
+    """Legacy BochaaI input schema used by older tests."""
+
+    query: str
+    freshness: Optional[str] = None
+    summary: bool = False
+    count: int = 10
+    include: Optional[str] = None
+    exclude: Optional[str] = None
+
+
+class WebPageValue(BaseModel):
+    id: Optional[str] = None
+    name: str = ""
+    url: str = ""
+    displayUrl: Optional[str] = None
+    snippet: str = ""
+    siteName: Optional[str] = None
+
+
+class WebSearchWebPages(BaseModel):
+    value: List[WebPageValue] = Field(default_factory=list)
+
+
+class WebSearchQueryContext(BaseModel):
+    originalQuery: str = ""
+
+
+class SearchResult(BaseModel):
+    title: str = ""
+    url: str = ""
+    link: str = ""
+    snippet: str = ""
+
+
+SearchResponse = BaseSearchResponse
+
+
+def convert_to_simple_results(results: List[Dict[str, Any]]) -> List[SearchResult]:
+    simple_results = []
+    for item in results:
+        url = item.get("url") or item.get("link") or ""
+        simple_results.append(
+            SearchResult(
+                title=item.get("title") or item.get("name") or "",
+                url=url,
+                link=url,
+                snippet=item.get("snippet") or item.get("description") or "",
+            )
+        )
+    return simple_results
 
 
 # ============================================================================
@@ -45,20 +101,44 @@ class BochaaIWebSearchTool(BaseSearchTool):
         **kwargs
     ):
         super().__init__(
-            name="bochaai_web_search",
-            description="使用博查AI搜索引擎进行网络搜索，支持中文优化和AI摘要。输入搜索查询，返回相关网页结果。",
+            name="bochaai_web_search_tool",
+            description="博查AI Web Search API 搜索工具，用于搜索网页信息，支持中文优化和AI摘要。",
             engine_name="bochaai",
             timeout=30.0,
-            **kwargs
         )
         self.api_key = api_key or os.getenv("BOCHAAI_API_KEY", "")
         self.endpoint = endpoint or "https://api.bochaai.com/v1/web-search"
         self.enable_summary = enable_summary
         self.include = include
         self.exclude = exclude
+        object.__setattr__(self, "args_schema", SearchInput)
 
         if not self.api_key:
-            logger.warning("[BochaaI] 未配置 API Key (BOCHAAI_API_KEY)")
+            raise ValueError("博查AI API Key未配置")
+
+    def _run(self, query: str = "", count: Optional[int] = None, summary: Optional[bool] = None, **kwargs):
+        old_summary = self.enable_summary
+        old_include = self.include
+        old_exclude = self.exclude
+        if summary is not None:
+            self.enable_summary = summary
+        if "include" in kwargs:
+            self.include = kwargs.get("include")
+        if "exclude" in kwargs:
+            self.exclude = kwargs.get("exclude")
+        try:
+            return self._execute_search(
+                query=query,
+                max_results=count or kwargs.get("max_results", 10),
+                freshness=kwargs.get("freshness"),
+            )
+        finally:
+            self.enable_summary = old_summary
+            self.include = old_include
+            self.exclude = old_exclude
+
+    async def _arun(self, query: str = "", count: Optional[int] = None, summary: Optional[bool] = None, **kwargs):
+        return self._run(query=query, count=count, summary=summary, **kwargs)
 
     def _execute_search(
         self,
@@ -109,6 +189,8 @@ class BochaaIWebSearchTool(BaseSearchTool):
                     results.append({
                         "title": item.get("name", ""),
                         "url": item.get("url", ""),
+                        "link": item.get("url", ""),
+                        "id": item.get("id"),
                         "snippet": item.get("snippet", ""),
                         "summary": item.get("summary"),
                         "site_name": item.get("siteName"),
@@ -198,6 +280,8 @@ class BochaaIWebSearchTool(BaseSearchTool):
                     results.append({
                         "title": item.get("name", ""),
                         "url": item.get("url", ""),
+                        "link": item.get("url", ""),
+                        "id": item.get("id"),
                         "snippet": item.get("snippet", ""),
                         "summary": item.get("summary"),
                         "site_name": item.get("siteName"),
@@ -221,12 +305,32 @@ class MockBochaaISearchTool(BaseSearchTool):
 
     def __init__(self, **kwargs):
         super().__init__(
-            name="mock_bochaai_web_search",
-            description="模拟博查AI搜索工具（测试用）",
+            name="bochaai_web_search_tool",
+            description="模拟使用博查AI Web Search API 搜索网页信息的搜索工具（测试用）",
             engine_name="bochaai_mock",
             timeout=5.0,
             **kwargs
         )
+        object.__setattr__(self, "args_schema", SearchInput)
+
+    def _run(self, query: str = "", count: int = 5, summary: bool = False, **kwargs):
+        results = self._execute_search(query=query, max_results=count)
+        if summary:
+            for item in results:
+                item["summary"] = f"AI摘要: {query} 是一个重要主题。{item.get('summary', '')}"
+        return results
+
+    async def _arun(self, query: str = "", count: int = 5, summary: bool = False, **kwargs):
+        return self._run(query=query, count=count, summary=summary)
+
+    def run(self, **kwargs):
+        results = self._run(**kwargs)
+        return {
+            "query": kwargs.get("query", ""),
+            "results": results,
+            "total_results": len(results),
+            "search_engine": self.engine_name,
+        }
 
     def _execute_search(
         self,
@@ -248,7 +352,9 @@ class MockBochaaISearchTool(BaseSearchTool):
         for i, (label, category) in enumerate(templates[:max_results]):
             mock_results.append({
                 "title": f"[Mock] {query} - {label}",
+                "id": str(i + 1),
                 "url": f"https://example.com/{category}/{query.replace(' ', '-')}-{i+1}",
+                "link": f"https://example.com/{category}/{query.replace(' ', '-')}-{i+1}",
                 "snippet": f"这是关于 '{query}' 的模拟搜索结果（{label}）。包含详细的分析和数据支持。",
                 "summary": f"AI摘要: {query} 是一个重要的研究方向，本文从{label}角度进行了深入探讨。",
                 "site_name": f"Mock {label} Site",

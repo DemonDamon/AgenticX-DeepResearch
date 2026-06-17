@@ -23,6 +23,8 @@ class SearchInput(BaseModel):
     max_results: int = Field(default=10, description="最大返回结果数")
     language: str = Field(default="zh-CN", description="搜索语言")
     freshness: Optional[str] = Field(default=None, description="时效性过滤: day/week/month/year")
+    fetch_content: bool = Field(default=False, description="是否抓取搜索结果全文")
+    content_max_chars: int = Field(default=12000, description="单篇全文最大字符数")
 
 
 class SearchResultItem(BaseModel):
@@ -101,6 +103,8 @@ class BaseSearchTool(BaseTool):
         max_results = kwargs.get("max_results", 10)
         language = kwargs.get("language", "zh-CN")
         freshness = kwargs.get("freshness")
+        fetch_content = kwargs.get("fetch_content", False)
+        content_max_chars = kwargs.get("content_max_chars", 12000)
 
         try:
             raw_results = self._execute_search(
@@ -112,6 +116,8 @@ class BaseSearchTool(BaseTool):
             
             # 标准化结果
             standardized = self._standardize_results(raw_results, query)
+            if fetch_content:
+                standardized = self._fetch_content_sync(standardized, content_max_chars)
             execution_time = time.time() - start_time
 
             response = SearchResponse(
@@ -149,6 +155,8 @@ class BaseSearchTool(BaseTool):
         max_results = kwargs.get("max_results", 10)
         language = kwargs.get("language", "zh-CN")
         freshness = kwargs.get("freshness")
+        fetch_content = kwargs.get("fetch_content", False)
+        content_max_chars = kwargs.get("content_max_chars", 12000)
 
         try:
             raw_results = await self._aexecute_search(
@@ -159,6 +167,8 @@ class BaseSearchTool(BaseTool):
             )
             
             standardized = self._standardize_results(raw_results, query)
+            if fetch_content:
+                standardized = await self._fetch_content_async(standardized, content_max_chars)
             execution_time = time.time() - start_time
 
             response = SearchResponse(
@@ -255,3 +265,46 @@ class BaseSearchTool(BaseTool):
                 logger.warning(f"[{self.engine_name}] 结果标准化失败: {e}")
                 continue
         return standardized
+
+    async def _fetch_content_async(
+        self,
+        results: List[SearchResultItem],
+        max_chars: int,
+    ) -> List[SearchResultItem]:
+        """Enrich search results with full Markdown content when possible."""
+        import asyncio
+        from tools.content_fetch import JinaContentFetcher
+
+        fetcher = JinaContentFetcher(max_chars=max_chars)
+
+        async def enrich(item: SearchResultItem) -> SearchResultItem:
+            if not item.url or item.content:
+                return item
+            fetched = await fetcher.fetch(item.url)
+            if fetched.ok and fetched.content:
+                item.content = fetched.content
+                item.metadata["content_fetcher"] = "jina"
+                item.metadata["content_status_code"] = fetched.status_code
+            elif fetched.error:
+                item.metadata["content_fetch_error"] = fetched.error
+            return item
+
+        return await asyncio.gather(*(enrich(item) for item in results))
+
+    def _fetch_content_sync(
+        self,
+        results: List[SearchResultItem],
+        max_chars: int,
+    ) -> List[SearchResultItem]:
+        """Synchronous wrapper for content enrichment."""
+        import asyncio
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self._fetch_content_async(results, max_chars))
+
+        if loop.is_running():
+            logger.warning("Skipping sync content fetch inside a running event loop")
+            return results
+        return loop.run_until_complete(self._fetch_content_async(results, max_chars))

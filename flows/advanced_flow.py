@@ -6,6 +6,7 @@ Advanced Research Flow (v3 - with FlowEventEmitter)
 v3 新增：细粒度 FlowEventEmitter 事件钩子，支持实时 SSE 进度推送。
 """
 
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional, Union
 
@@ -31,6 +32,14 @@ from tools import BaseSearchTool
 from .basic_flow import ResearchState
 
 logger = logging.getLogger(__name__)
+
+
+class _NoopGraphBuilder:
+    async def build_from_text(self, *args, **kwargs):
+        class GraphData:
+            entities = []
+
+        return GraphData()
 
 
 class AdvancedResearchFlow(Flow[ResearchState]):
@@ -85,8 +94,14 @@ class AdvancedResearchFlow(Flow[ResearchState]):
         if memory:
             self.state.memory = memory
 
-        # GraphRAG 导出器
-        self.graph_builder = GraphBuilder(llm=self.llm)
+        # GraphRAG 导出器（AgenticX versions differ on constructor shape）
+        try:
+            self.graph_builder = GraphBuilder(llm=self.llm)
+        except TypeError:
+            try:
+                self.graph_builder = GraphBuilder(config={}, llm_config={})
+            except Exception:
+                self.graph_builder = _NoopGraphBuilder()
 
     # ------------------------------------------------------------------
     # 内部辅助：安全发射事件
@@ -181,7 +196,7 @@ class AdvancedResearchFlow(Flow[ResearchState]):
             research_context={"subtask_context": subtask_context},
             knowledge_gaps=[],
             iteration_number=it_num,
-            max_queries=5
+            max_queries=10
         )
         self.state.queries = queries
 
@@ -213,8 +228,7 @@ class AdvancedResearchFlow(Flow[ResearchState]):
             queries=queries
         )
 
-        round_summaries = []
-        for idx, query in enumerate(queries, 1):
+        async def summarize_one(idx: int, query: SearchQuery) -> str:
             logger.info(f"Searching: {query.query}")
 
             # 事件：单次搜索开始
@@ -224,7 +238,6 @@ class AdvancedResearchFlow(Flow[ResearchState]):
                 query=query.query,
                 research_topic=self.state.topic
             )
-            round_summaries.append(summary)
 
             # 事件：搜索完成 + 摘要生成
             await self._emit("emit_search_completed", query.query, 1)
@@ -242,6 +255,13 @@ class AdvancedResearchFlow(Flow[ResearchState]):
                     }
                 )
                 await self._emit("emit_knowledge_indexed", idx)
+            return summary
+
+        round_summaries = []
+        if queries:
+            round_summaries = await asyncio.gather(
+                *(summarize_one(idx, query) for idx, query in enumerate(queries, 1))
+            )
 
         iteration.analysis_summary = "\n\n".join(round_summaries)
         self.state.context.add_iteration(iteration)

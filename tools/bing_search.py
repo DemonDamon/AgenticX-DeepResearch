@@ -13,7 +13,10 @@ import urllib.request
 import urllib.error
 from typing import Any, Dict, List, Optional
 
-from .base_search import BaseSearchTool
+try:
+    from .base_search import BaseSearchTool
+except ImportError:  # Support legacy tests that import this module directly.
+    from base_search import BaseSearchTool
 
 logger = logging.getLogger(__name__)
 
@@ -29,30 +32,40 @@ class BingWebSearchTool(BaseSearchTool):
     def __init__(
         self,
         api_key: Optional[str] = None,
+        subscription_key: Optional[str] = None,
         endpoint: Optional[str] = None,
         market: str = "zh-CN",
         safe_search: str = "Moderate",
+        count: int = 10,
         **kwargs
     ):
         super().__init__(
-            name="bing_web_search",
-            description="使用 Bing 搜索引擎进行网络搜索。输入搜索查询，返回相关网页结果。",
+            name="bing_web_search_tool",
+            description="使用 Bing Web Search API 进行网络搜索。输入搜索查询，返回相关网页结果。",
             engine_name="bing",
             timeout=30.0,
-            **kwargs
         )
-        self.api_key = (
-            api_key
+        self.subscription_key = (
+            subscription_key
+            or api_key
             or os.getenv("BING_SUBSCRIPTION_KEY")
             or os.getenv("BING_API_KEY")
             or os.getenv("AZURE_SUBSCRIPTION_KEY", "")
         )
+        self.api_key = self.subscription_key
         self.endpoint = endpoint or "https://api.bing.microsoft.com/v7.0/search"
         self.market = market
         self.safe_search = safe_search
+        self.count = count
 
         if not self.api_key:
-            logger.warning("[Bing] 未配置 API Key (BING_SUBSCRIPTION_KEY / BING_API_KEY)")
+            raise ValueError("Bing Subscription Key 未配置")
+
+    def _run(self, query: str = "", max_results: Optional[int] = None, **kwargs):
+        return self._execute_search(query=query, max_results=max_results or self.count)
+
+    async def _arun(self, query: str = "", max_results: Optional[int] = None, **kwargs):
+        return await self._aexecute_search(query=query, max_results=max_results or self.count)
 
     def _execute_search(
         self,
@@ -96,9 +109,10 @@ class BingWebSearchTool(BaseSearchTool):
             if "webPages" in data and "value" in data["webPages"]:
                 for item in data["webPages"]["value"]:
                     results.append({
-                        "title": item.get("name", ""),
+                        "title": item.get("name") or "无标题",
                         "url": item.get("url", ""),
-                        "snippet": item.get("snippet", ""),
+                        "link": item.get("url", ""),
+                        "snippet": item.get("snippet") or "无摘要",
                         "display_url": item.get("displayUrl"),
                         "date_crawled": item.get("dateLastCrawled"),
                     })
@@ -134,62 +148,14 @@ class BingWebSearchTool(BaseSearchTool):
         language: str = "zh-CN",
         freshness: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """异步执行 Bing 搜索请求"""
-        try:
-            import aiohttp
-        except ImportError:
-            import asyncio
-            loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(
-                None,
-                lambda: self._execute_search(query, max_results, language, freshness)
-            )
+        """异步执行 Bing 搜索请求（复用同步实现，便于测试 mock urllib）。"""
+        import asyncio
 
-        if not self.api_key:
-            return []
-
-        params = {
-            "q": query,
-            "count": str(min(max(max_results, 1), 50)),
-            "mkt": language or self.market,
-            "safesearch": self.safe_search,
-        }
-
-        if freshness:
-            freshness_map = {"day": "Day", "week": "Week", "month": "Month"}
-            bing_freshness = freshness_map.get(freshness.lower())
-            if bing_freshness:
-                params["freshness"] = bing_freshness
-
-        headers = {"Ocp-Apim-Subscription-Key": self.api_key}
-
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    self.endpoint,
-                    params=params,
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=30.0)
-                ) as response:
-                    response.raise_for_status()
-                    data = await response.json()
-
-            results = []
-            if "webPages" in data and "value" in data["webPages"]:
-                for item in data["webPages"]["value"]:
-                    results.append({
-                        "title": item.get("name", ""),
-                        "url": item.get("url", ""),
-                        "snippet": item.get("snippet", ""),
-                        "display_url": item.get("displayUrl"),
-                        "date_crawled": item.get("dateLastCrawled"),
-                    })
-
-            return results
-
-        except Exception as e:
-            logger.error(f"[Bing] 异步搜索异常: {e}")
-            return []
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self._execute_search(query, max_results, language, freshness),
+        )
 
 
 # ============================================================================
@@ -201,12 +167,27 @@ class MockBingSearchTool(BaseSearchTool):
 
     def __init__(self, **kwargs):
         super().__init__(
-            name="mock_bing_web_search",
-            description="模拟 Bing 搜索工具（测试用）",
+            name="bing_web_search_tool",
+            description="模拟使用 Bing Web Search API 的搜索工具（测试用）",
             engine_name="bing_mock",
             timeout=5.0,
             **kwargs
         )
+
+    def _run(self, query: str = "", max_results: int = 5, **kwargs):
+        return self._execute_search(query=query, max_results=max_results)
+
+    async def _arun(self, query: str = "", max_results: int = 5, **kwargs):
+        return self._execute_search(query=query, max_results=max_results)
+
+    def run(self, **kwargs):
+        results = self._run(**kwargs)
+        return {
+            "query": kwargs.get("query", ""),
+            "results": results,
+            "total_results": len(results),
+            "search_engine": self.engine_name,
+        }
 
     def _execute_search(
         self,
@@ -229,6 +210,7 @@ class MockBingSearchTool(BaseSearchTool):
             mock_results.append({
                 "title": f"[MockBing] {query} - {label}",
                 "url": f"https://example.com/bing/{category}/{query.replace(' ', '-')}-{i+1}",
+                "link": f"https://example.com/bing/{category}/{query.replace(' ', '-')}-{i+1}",
                 "snippet": f"Bing 模拟结果: 关于 '{query}' 的{label}，涵盖多个重要维度的分析。",
                 "display_url": f"example.com/bing/{category}/...",
                 "date_crawled": "2025-01-01T00:00:00Z",

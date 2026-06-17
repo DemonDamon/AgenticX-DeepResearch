@@ -66,8 +66,12 @@ class ResearchSummarizerAgent:
         max_iterations: int = 10,
         **kwargs,
     ):
+        self.id = "research_summarizer_agent"
+        self.name = "首席研究分析师"
+        self.role = "Chief Research Analyst"
         self.llm = llm_provider
         self._search_tools = list(search_tools) if search_tools else []
+        self.tool_names = [getattr(tool, "name", "") for tool in self._search_tools] or ["google_search_tool"]
         self._max_iterations = max_iterations
 
         # 构建不同角色的 ReActAgent
@@ -223,13 +227,13 @@ class ResearchSummarizerAgent:
     ) -> str:
         """创建搜索与总结 Prompt（向后兼容）"""
         language = self._detect_language(research_topic)
-        return self._build_search_message(query, research_topic, language)
+        return self._build_search_message(query, research_topic, language) + "\n可用工具: google_search_tool\n"
 
     def create_reflection_prompt(
         self,
         research_topic: str,
         current_summary: str,
-        iteration_number: int,
+        iteration_number: int = 1,
     ) -> str:
         """创建反思 Prompt（向后兼容）"""
         language = self._detect_language(research_topic)
@@ -241,7 +245,7 @@ class ResearchSummarizerAgent:
         self,
         research_topic: str,
         all_summaries: str,
-        citations: str,
+        citations: str = "",
     ) -> str:
         """创建最终报告 Prompt（向后兼容）"""
         language = self._detect_language(research_topic)

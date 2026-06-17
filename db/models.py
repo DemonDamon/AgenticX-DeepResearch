@@ -36,6 +36,9 @@ engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread"
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def init_db():
+    # Tests may delete the sqlite file after this module has been imported.
+    # Disposing stale connections prevents "readonly database" handles.
+    engine.dispose()
     Base.metadata.create_all(bind=engine)
 
 def get_db():

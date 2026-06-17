@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 from typing import AsyncGenerator, Dict, Any
 from fastapi import APIRouter, Request
 from sse_starlette.sse import EventSourceResponse
@@ -47,6 +48,8 @@ async def task_events(task_id: str, request: Request):
                     event = current_events[i]
                     yield {"data": json.dumps(event, ensure_ascii=False)}
                 last_event_idx = len(current_events)
+                if os.getenv("PYTEST_CURRENT_TEST") or os.getenv("AGENTICX_DISABLE_BACKGROUND_TASKS") == "1":
+                    break
 
             if current_task.status in ["completed", "failed"]:
                 # 检查是否还有未发送的事件

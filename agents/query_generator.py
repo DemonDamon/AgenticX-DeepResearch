@@ -111,6 +111,20 @@ class QueryGenerationTool(BaseTool):
                 "{topic} 政策法规",
             ],
         }
+        self._coverage_suffixes = [
+            "市场规模",
+            "关键趋势",
+            "技术架构",
+            "应用案例",
+            "竞品对比",
+            "风险挑战",
+            "投资融资",
+            "政策法规",
+            "专家观点",
+            "未来预测 2026",
+            "最新数据",
+            "开源生态",
+        ]
 
     def _run(
         self,
@@ -128,7 +142,9 @@ class QueryGenerationTool(BaseTool):
         except ValueError:
             strategy_enum = QueryStrategy.BROAD_EXPLORATION
 
-        templates = self._query_templates.get(strategy_enum, [])
+        templates = list(self._query_templates.get(strategy_enum, []))
+        if max_queries > len(templates):
+            templates.extend("{topic} " + suffix for suffix in self._coverage_suffixes)
         queries = []
 
         gap_area = knowledge_gaps[0] if knowledge_gaps else "核心问题"
@@ -189,6 +205,10 @@ class QueryGeneratorAgent:
         max_iterations: int = 5,
         **kwargs,
     ):
+        self.id = "query_generator_agent"
+        self.name = "查询生成专家"
+        self.role = "Expert Search Query Formulator"
+        self.tool_names: List[str] = []
         self.llm = llm_provider
         self._query_tool = QueryGenerationTool()
         self._max_iterations = max_iterations
@@ -351,6 +371,40 @@ Return in JSON format:
 }}
 """
 
+    def generate_followup_queries(
+        self,
+        research_topic: str,
+        existing_findings: str,
+        knowledge_gaps: str,
+        num_queries: int = 3,
+    ) -> str:
+        """生成后续搜索查询 Prompt（向后兼容旧测试和旧工作流）。"""
+        language = self._detect_language(research_topic)
+        if language == "zh":
+            return f"""
+请基于已有研究发现和知识空白，为「{research_topic}」生成{num_queries}个后续搜索查询。
+
+已有发现:
+{existing_findings}
+
+知识空白:
+{knowledge_gaps}
+
+请以JSON格式返回:
+{{"queries": ["query1", "query2"]}}
+"""
+        return f"""
+Generate {num_queries} follow-up search queries for "{research_topic}".
+
+Existing findings:
+{existing_findings}
+
+Knowledge gaps:
+{knowledge_gaps}
+
+Return JSON:
+{{"queries": ["query1", "query2"]}}
+"""
     @property
     def query_stats(self) -> Dict[str, Any]:
         """获取查询统计"""
