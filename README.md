@@ -37,32 +37,35 @@
 
 ## 系统架构
 
-```mermaid
-graph TD
-    User[用户 / CLI / API] --> Main[main.py]
-    User --> API[server/api.py]
+![AgenticX DeepResearch 系统架构](assets/architect.png)
 
-    Main --> Basic[flows/basic_flow.py]
-    Main --> Advanced[flows/advanced_flow.py]
-    API --> Basic
-    API --> Advanced
+系统采用分层架构：用户通过 CLI、HTTP API 或协议入口发起研究任务，服务层负责任务编排、实时事件和状态持久化，工作流层根据模式选择 Basic 或 Advanced Flow，Agent 与工具层完成搜索、抓取、总结和报告生成。
 
-    Basic --> Query[agents/query_generator.py]
-    Advanced --> Planner[agents/planner.py]
-    Advanced --> Query
-    Basic --> Search[tools/*_search.py]
-    Advanced --> Search
-    Search --> Fetch[tools/content_fetch.py]
-    Fetch --> Summary[agents/research_summarizer.py]
-    Summary --> Report[agents/report_writer.py]
-    Report --> Output[output/*.md]
+## 核心业务流程
 
-    API --> SSE[server/sse.py]
-    API --> Protocols[A2A / MCP / NEAR]
-    API --> DB[db/manager.py]
+### Basic 研究流程
 
-    Legacy[workflows/deep_search_workflow.py] -.兼容层.-> Basic
-```
+![Basic 研究流程](assets/basic-research-flow.png)
+
+Basic 模式面向明确研究问题，主链路是生成查询、执行搜索、抓取内容、总结证据并输出报告。
+
+### Advanced 深度研究流程
+
+![Advanced 深度研究流程](assets/advanced-research-flow.png)
+
+Advanced 模式增加研究规划、知识缺口识别、多轮迭代和收敛判断，适合复杂主题的深度探索。
+
+### API / SSE 服务化流程
+
+![API SSE 服务化流程](assets/api-sse-service-flow.png)
+
+服务化流程覆盖任务创建、状态持久化、后台执行、SSE 进度推送和最终结果获取。
+
+### 内容获取与证据处理流程
+
+![内容获取与证据处理流程](assets/content-evidence-flow.png)
+
+内容处理流程强调从搜索结果到网页正文、清洗、Token 预算、并发总结和报告证据链的生成过程。
 
 ## 快速开始
 
